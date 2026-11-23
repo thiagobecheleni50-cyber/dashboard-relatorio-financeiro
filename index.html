@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Painel Executivo — Relatório Financeiro (2024–2026)</title>
+  <meta name="description" content="Dashboard executivo para acompanhamento financeiro com importação de arquivos .xlsx, .csv e .pdf, sincronização com Google Drive/Sheets (2024–2026), plano de aumento de arrecadação e exportação em PDF." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="./vendor/pdf.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">RF</div>
+        <div>
+          <p class="brand-title">Relatório Financeiro</p>
+          <p class="brand-sub">Arrecadação • 2024 a 2026</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="nav-label">Menu do Painel</div>
+        <nav class="nav-list" aria-label="Menu principal">
+          <button class="nav-btn active" data-view="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            Visão Geral & Indicadores
+          </button>
+          <button class="nav-btn" data-view="import-drive">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Importar XLSX / CSV / PDF & Drive
+          </button>
+          <button class="nav-btn" data-view="strategy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+            Soluções & Metas
+          </button>
+          <button class="nav-btn" data-view="records">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            Inserir & Excluir Dados
+          </button>
+          <button class="nav-btn" data-view="reports">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            Exportar Relatório PDF
+          </button>
+        </nav>
+      </div>
+
+      <div class="sidebar-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;font-weight:600;">
+          <span><span class="dot" id="sb-dot"></span>Base Financeira</span>
+          <span class="num" id="sb-count" style="color:var(--peach)">0 reg.</span>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-muted);line-height:1.4;" id="sb-status">
+          Pronto para importar .xlsx, .csv, .pdf ou sincronizar Google Drive (2024–2026).
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <div class="main-area">
+      <header class="topbar">
+        <div class="page-heading">
+          <h1 id="view-title">Visão Geral Financeira</h1>
+          <p id="view-subtitle">Acompanhamento fiel de arrecadação, metas e despesas (2024–2026)</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-primary" id="btn-top-insert">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Inserir Dado
+          </button>
+          <button class="btn btn-secondary" id="btn-top-import">Importar XLSX / CSV / PDF</button>
+          <button class="btn btn-coral" id="btn-top-pdf">Exportar PDF</button>
+        </div>
+      </header>
+
+      <!-- Global Filter Bar -->
+      <section class="filter-bar" aria-label="Filtros globais">
+        <div class="filter-field">
+          <label>Ano / Exercício</label>
+          <div class="year-seg" id="year-seg">
+            <button class="year-btn active" data-year="">Todos</button>
+            <button class="year-btn" data-year="2024">2024</button>
+            <button class="year-btn" data-year="2025">2025</button>
+            <button class="year-btn" data-year="2026">2026</button>
+          </div>
+        </div>
+        <div class="filter-field">
+          <label for="f-start">Data Inicial</label>
+          <input type="date" id="f-start" class="input" />
+        </div>
+        <div class="filter-field">
+          <label for="f-end">Data Final</label>
+          <input type="date" id="f-end" class="input" />
+        </div>
+        <div class="filter-field">
+          <label for="f-cat">Categoria</label>
+          <select id="f-cat" class="select"><option value="Todas">Todas as categorias</option></select>
+        </div>
+        <div class="filter-field">
+          <label>&nbsp;</label>
+          <button class="btn btn-ghost btn-sm" id="btn-clear-filters">Limpar Filtros</button>
+        </div>
+      </section>
+
+      <main class="workspace">
+        <div id="top-banner" class="banner" style="display:none;"></div>
+
+        <!-- VIEW 1: OVERVIEW -->
+        <section class="view-panel active" id="view-overview">
+          <div class="kpi-grid">
+            <article class="kpi-card">
+              <div class="kpi-top"><span class="kpi-label">Arrecadação Total</span><span class="kpi-badge num" id="k-yoy">—</span></div>
+              <div class="kpi-val orange num" id="k-rev">R$ 0,00</div>
+              <div class="kpi-sub" id="k-rev-sub">Média mensal: R$ 0,00</div>
+            </article>
+            <article class="kpi-card">
+              <div class="kpi-top"><span class="kpi-label">Meta de Arrecadação</span><span class="kpi-badge num" id="k-att">0,0%</span></div>
+              <div class="kpi-val num" id="k-meta">R$ 0,00</div>
+              <div class="prog-track"><div class="prog-fill" id="k-bar" style="width:0%"></div></div>
+              <div class="kpi-sub" id="k-meta-src">Origem: Não definida</div>
+            </article>
+            <article class="kpi-card">
+              <div class="kpi-top"><span class="kpi-label">Desvio da Meta (Gap)</span><span class="kpi-badge" id="k-gap-tag">Aguardando</span></div>
+              <div class="kpi-val num" id="k-gap">—</div>
+              <div class="kpi-sub" id="k-gap-sub">Diferença frente à meta do período</div>
+            </article>
+            <article class="kpi-card">
+              <div class="kpi-top"><span class="kpi-label">Despesas Totais</span><span class="kpi-badge neg num" id="k-exp-ratio">0% rec.</span></div>
+              <div class="kpi-val coral num" id="k-exp">R$ 0,00</div>
+              <div class="kpi-sub" id="k-rec-cnt">0 lançamentos no período</div>
+            </article>
+            <article class="kpi-card">
+              <div class="kpi-top"><span class="kpi-label">Saldo Líquido</span><span class="kpi-badge num" id="k-margin">0,0% margem</span></div>
+              <div class="kpi-val num" id="k-saldo">R$ 0,00</div>
+              <div class="kpi-sub">Resultado operacional (Arrecadação − Despesas)</div>
+            </article>
+            <article class="kpi-card">
+              <div class="kpi-top"><span class="kpi-label">Projeção Anual (Run-Rate)</span><span class="kpi-badge num" id="k-months">0 meses</span></div>
+              <div class="kpi-val num" id="k-proj">R$ 0,00</div>
+              <div class="kpi-sub">Ritmo anual projetado pelos dados reais</div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Evolução Mensal — Arrecadação vs Meta e Despesas</h2>
+                <p class="panel-sub">Passe o cursor sobre cada mês para ver os valores exatos em R$ e o atingimento da meta</p>
+              </div>
+            </div>
+            <div class="chart-legend">
+              <span class="leg-item"><span class="leg-swatch" style="background:#f5ab6e"></span> Arrecadação</span>
+              <span class="leg-item"><span class="leg-swatch" style="background:rgba(240,123,113,0.45);border:1px solid #f07b71"></span> Despesas</span>
+              <span class="leg-item"><span class="leg-swatch" style="background:#f07b71;border-radius:50%"></span> Meta de Arrecadação</span>
+            </div>
+            <div class="chart-box tall">
+              <canvas id="c-monthly"></canvas>
+              <div class="chart-tooltip" id="tt-monthly"></div>
+            </div>
+          </article>
+
+          <div class="grid-2w">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Comparativo Anual (2024 × 2025 × 2026)</h2>
+                  <p class="panel-sub">Arrecadação realizada, meta anual e despesas consolidadas</p>
+                </div>
+              </div>
+              <div class="chart-legend">
+                <span class="leg-item"><span class="leg-swatch" style="background:#f5ab6e"></span> Arrecadação</span>
+                <span class="leg-item"><span class="leg-swatch" style="background:rgba(248,198,148,0.28);border:1px solid #f8c694"></span> Meta</span>
+                <span class="leg-item"><span class="leg-swatch" style="background:#f07b71"></span> Despesas</span>
+              </div>
+              <div class="chart-box">
+                <canvas id="c-annual"></canvas>
+                <div class="chart-tooltip" id="tt-annual"></div>
+              </div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Arrecadação por Categoria</h2>
+                  <p class="panel-sub">Participação percentual e desempenho frente à meta</p>
+                </div>
+              </div>
+              <div class="cat-list" id="ov-cats"></div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Soluções para Aumento de Arrecadação e Manutenção da Meta</h2>
+                <p class="panel-sub">Diagnóstico fiel aos dados com impacto estimado em reais</p>
+              </div>
+              <button class="btn btn-secondary btn-sm" id="btn-go-strat">Abrir Simulador & Metas</button>
+            </div>
+            <div id="ov-diag"></div>
+            <div class="rec-grid" id="ov-recs"></div>
+          </article>
+        </section>
+
+        <!-- VIEW 2: IMPORT XLSX / CSV / PDF & GOOGLE DRIVE -->
+        <section class="view-panel" id="view-import-drive">
+          <div class="grid-2">
+            <!-- Multi-Format File Import -->
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Importar Arquivos .XLSX, .CSV e .PDF</h2>
+                  <p class="panel-sub">Arraste planilhas ou relatórios financeiros em PDF para extrair e importar os dados</p>
+                </div>
+                <div style="display:flex;gap:6px;">
+                  <button class="btn btn-ghost btn-sm" id="btn-dl-csv-tpl">Modelo .CSV</button>
+                </div>
+              </div>
+
+              <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Área para enviar arquivos XLSX, CSV ou PDF">
+                <div class="dz-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+                </div>
+                <strong style="font-size:14px;">Arraste arquivos .xlsx, .csv ou .pdf aqui</strong>
+                <span class="hint">Ou clique para selecionar • Leitura inteligente de tabelas, datas BR e valores R$</span>
+                <div class="format-badges">
+                  <span class="fmt-badge">.XLSX (Excel)</span>
+                  <span class="fmt-badge">.CSV / .TSV</span>
+                  <span class="fmt-badge pdf">.PDF (Relatórios e Extratos)</span>
+                </div>
+                <input type="file" id="file-picker" accept=".xlsx,.xlsm,.csv,.tsv,.txt,.pdf,application/pdf" multiple hidden />
+              </div>
+
+              <div class="form-grid" style="margin-top:14px;">
+                <div class="fg">
+                  <label for="up-year">Ano Padrão (se o arquivo não informar ano)</label>
+                  <select id="up-year" class="select">
+                    <option value="">Auto-detectar pelas datas / nome</option>
+                    <option value="2024">2024</option>
+                    <option value="2025">2025</option>
+                    <option value="2026">2026</option>
+                  </select>
+                </div>
+                <div class="fg" style="justify-content:flex-end;">
+                  <label>&nbsp;</label>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn btn-primary" id="btn-pick-files" style="flex:1;">Enviar .XLSX / .CSV / .PDF</button>
+                  </div>
+                </div>
+              </div>
+              <p class="hint" style="margin-top:10px;">
+                <strong>Importação de PDF:</strong> extrai automaticamente linhas com datas, descrições, categorias e valores monetários (`R$ 1.234,56`) e abre uma <strong>pré-visualização editável</strong> antes de gravar, garantindo 100% de fidelidade aos dados.
+              </p>
+            </article>
+
+            <!-- Google Drive / Sheets Auto-Sync -->
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Sincronização Automática — Google Drive (2024–2026)</h2>
+                  <p class="panel-sub">Conecte links das Planilhas Google do seu Drive para atualização contínua</p>
+                </div>
+                <button class="btn btn-primary btn-sm" id="btn-sync-drv">Sincronizar Agora</button>
+              </div>
+
+              <div class="diag-box">
+                <h4 id="drv-status-title">Monitoramento do Google Drive</h4>
+                <p id="drv-status-txt">
+                  Cole abaixo os links das suas Planilhas Google (2024, 2025 e 2026) compartilhadas com visualização por link (ou links CSV publicados na Web). O painel busca os dados diretamente e atualiza automaticamente no intervalo configurado.
+                </p>
+              </div>
+
+              <div class="form-grid">
+                <div class="fg full">
+                  <label for="drv-links">Links das Planilhas do Google Drive (2024, 2025, 2026 — um por linha)</label>
+                  <textarea id="drv-links" class="textarea" placeholder="Ex: https://docs.google.com/spreadsheets/d/SEU_ID_2024/edit&#10;https://docs.google.com/spreadsheets/d/SEU_ID_2025/edit&#10;https://docs.google.com/spreadsheets/d/SEU_ID_2026/edit"></textarea>
+                </div>
+                <div class="fg">
+                  <label for="drv-auto">Atualização Automática</label>
+                  <select id="drv-auto" class="select">
+                    <option value="true">Ativada (verifica alterações automaticamente)</option>
+                    <option value="false">Desativada (somente manual)</option>
+                  </select>
+                </div>
+                <div class="fg">
+                  <label for="drv-interval">Intervalo de Verificação</label>
+                  <select id="drv-interval" class="select">
+                    <option value="30">A cada 30 segundos</option>
+                    <option value="60" selected>A cada 1 minuto</option>
+                    <option value="300">A cada 5 minutos</option>
+                  </select>
+                </div>
+              </div>
+              <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" id="btn-save-drv">Salvar Configuração</button>
+              </div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Arquivos & Fontes Carregadas (.XLSX, .CSV, .PDF e Drive)</h2>
+                <p class="panel-sub">Exclua todos os lançamentos de um arquivo específico com um clique</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Arquivo / Origem</th>
+                    <th>Formato / Tipo</th>
+                    <th class="tr">Registros</th>
+                    <th>Importado em</th>
+                    <th class="tr">Ação</th>
+                  </tr>
+                </thead>
+                <tbody id="files-tbody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <!-- VIEW 3: STRATEGY & GOALS -->
+        <section class="view-panel" id="view-strategy">
+          <div class="grid-2">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Metas Anuais de Arrecadação (2024–2026)</h2>
+                  <p class="panel-sub">Configure a meta oficial de arrecadação de cada exercício</p>
+                </div>
+              </div>
+              <div class="form-grid-3">
+                <div class="fg">
+                  <label for="t-2024">Meta 2024 (R$)</label>
+                  <input type="number" step="0.01" min="0" id="t-2024" class="input num" placeholder="0,00" />
+                </div>
+                <div class="fg">
+                  <label for="t-2025">Meta 2025 (R$)</label>
+                  <input type="number" step="0.01" min="0" id="t-2025" class="input num" placeholder="0,00" />
+                </div>
+                <div class="fg">
+                  <label for="t-2026">Meta 2026 (R$)</label>
+                  <input type="number" step="0.01" min="0" id="t-2026" class="input num" placeholder="0,00" />
+                </div>
+              </div>
+              <div style="margin-top:14px;display:flex;justify-content:flex-end;">
+                <button class="btn btn-primary" id="btn-save-targets">Salvar Metas Anuais</button>
+              </div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Simulador de Correção de Meta (What-If)</h2>
+                  <p class="panel-sub">Teste ganhos de arrecadação e contenção sobre os dados reais</p>
+                </div>
+              </div>
+              <div class="slider-row">
+                <div class="slider-top"><span>Aumento na Arrecadação Principal</span><strong class="num" id="s-rev-lbl">+0%</strong></div>
+                <input type="range" id="s-rev" min="0" max="35" value="0" />
+              </div>
+              <div class="slider-row">
+                <div class="slider-top"><span>Recuperação de Inadimplência / Pendências</span><strong class="num" id="s-rec-lbl">+0%</strong></div>
+                <input type="range" id="s-rec" min="0" max="20" value="0" />
+              </div>
+              <div class="slider-row">
+                <div class="slider-top"><span>Otimização de Despesas</span><strong class="num" id="s-exp-lbl">-0%</strong></div>
+                <input type="range" id="s-exp" min="0" max="25" value="0" />
+              </div>
+              <div class="sim-grid">
+                <div class="sim-card"><span>Arrecadação Simulada</span><strong class="num" id="s-out-rev">R$ 0,00</strong></div>
+                <div class="sim-card"><span>Atingimento da Meta</span><strong class="num" id="s-out-att">—</strong></div>
+                <div class="sim-card"><span>Saldo Líquido Simulado</span><strong class="num" id="s-out-sal">R$ 0,00</strong></div>
+              </div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Desvio Mensal da Meta (Superávit vs Déficit)</h2>
+                <p class="panel-sub">Barras em laranja indicam superávit; barras em vermelho-coral indicam déficit frente à meta</p>
+              </div>
+            </div>
+            <div class="chart-box">
+              <canvas id="c-dev"></canvas>
+              <div class="chart-tooltip" id="tt-dev"></div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Plano de Ação Completo — Aumento de Arrecadação & Correção</h2>
+                <p class="panel-sub">Recomendações objetivas calculadas sobre os números carregados</p>
+              </div>
+            </div>
+            <div id="st-diag"></div>
+            <div class="rec-grid" id="st-recs"></div>
+          </article>
+        </section>
+
+        <!-- VIEW 4: RECORDS CRUD -->
+        <section class="view-panel" id="view-records">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Lançamentos Financeiros (Inserir, Editar & Excluir)</h2>
+                <p class="panel-sub">Gerencie seus dados manualmente ou remova lançamentos individuais e em lote</p>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                <button class="btn btn-primary btn-sm" id="btn-rec-add">+ Inserir Novo Dado</button>
+                <button class="btn btn-coral btn-sm" id="btn-del-sel" disabled>Excluir Selecionados (0)</button>
+                <button class="btn btn-ghost btn-sm" id="btn-del-all">Limpar Toda a Base</button>
+              </div>
+            </div>
+
+            <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
+              <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                <input type="search" id="r-search" class="input" placeholder="Buscar descrição, categoria ou origem..." style="min-width:240px;" />
+                <select id="r-type" class="select">
+                  <option value="">Receitas e Despesas</option>
+                  <option value="receita">Somente Receitas</option>
+                  <option value="despesa">Somente Despesas</option>
+                </select>
+              </div>
+              <span class="hint num" id="r-total-lbl">0 registros</span>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:34px;"><input type="checkbox" id="cb-all" class="cb" /></th>
+                    <th>Data</th>
+                    <th>Tipo</th>
+                    <th>Categoria</th>
+                    <th>Descrição</th>
+                    <th class="tr">Realizado</th>
+                    <th class="tr">Meta</th>
+                    <th>Origem</th>
+                    <th class="tr">Ações</th>
+                  </tr>
+                </thead>
+                <tbody id="rec-tbody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <!-- VIEW 5: PDF REPORTS -->
+        <section class="view-panel" id="view-reports">
+          <div class="grid-2">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Relatório Completo em PDF</h2>
+                  <p class="panel-sub">Consolidado geral de todos os anos (2024, 2025 e 2026) com indicadores e plano de ação</p>
+                </div>
+              </div>
+              <p style="font-size:13px;color:var(--text-secondary);margin:0 0 18px;">
+                Gera e baixa imediatamente um arquivo <strong>.PDF</strong> executivo contendo resumo de indicadores financeiros, comparativo anual 2024–2026, diagnóstico de desvio da meta, soluções para aumento de arrecadação, detalhamento por categoria e lançamentos.
+              </p>
+              <button class="btn btn-primary" id="btn-pdf-full">Baixar Relatório Completo (PDF)</button>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2 class="panel-title">Relatório por Datas / Período em PDF</h2>
+                  <p class="panel-sub">Escolha a data inicial, data final e as seções do documento</p>
+                </div>
+              </div>
+
+              <div class="preset-row">
+                <button class="btn btn-ghost btn-sm pdf-pre" data-s="2024-01-01" data-e="2024-12-31">Ano 2024</button>
+                <button class="btn btn-ghost btn-sm pdf-pre" data-s="2025-01-01" data-e="2025-12-31">Ano 2025</button>
+                <button class="btn btn-ghost btn-sm pdf-pre" data-s="2026-01-01" data-e="2026-12-31">Ano 2026</button>
+                <button class="btn btn-ghost btn-sm pdf-pre" data-days="30">Últimos 30 dias</button>
+                <button class="btn btn-ghost btn-sm pdf-pre" data-days="90">Últimos 90 dias</button>
+              </div>
+
+              <div class="form-grid">
+                <div class="fg">
+                  <label for="pdf-s">Data Inicial</label>
+                  <input type="date" id="pdf-s" class="input" value="2026-01-01" />
+                </div>
+                <div class="fg">
+                  <label for="pdf-e">Data Final</label>
+                  <input type="date" id="pdf-e" class="input" value="2026-12-31" />
+                </div>
+                <div class="fg full">
+                  <label for="pdf-cat">Categoria (opcional)</label>
+                  <select id="pdf-cat" class="select"><option value="Todas">Todas as categorias</option></select>
+                </div>
+              </div>
+
+              <div class="check-grid">
+                <label class="check-box"><input type="checkbox" id="opt-sol" class="cb" checked /> Soluções & correção de meta</label>
+                <label class="check-box"><input type="checkbox" id="opt-cat" class="cb" checked /> Detalhamento por categoria</label>
+                <label class="check-box"><input type="checkbox" id="opt-tbl" class="cb" checked /> Tabela de lançamentos</label>
+                <label class="check-box"><input type="checkbox" id="opt-ann" class="cb" checked /> Comparativo 2024–2026</label>
+              </div>
+
+              <button class="btn btn-primary" id="btn-pdf-period">Gerar Relatório por Datas (PDF)</button>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Insert / Edit Modal -->
+  <div class="modal-bg" id="m-record">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="m-rec-title">Inserir Novo Lançamento</h3>
+        <button class="modal-close" id="m-rec-x" aria-label="Fechar">&times;</button>
+      </div>
+      <form id="rec-form">
+        <div class="modal-body">
+          <input type="hidden" id="rf-id" />
+          <div class="form-grid">
+            <div class="fg">
+              <label for="rf-date">Data *</label>
+              <input type="date" id="rf-date" class="input" required />
+            </div>
+            <div class="fg">
+              <label for="rf-type">Tipo *</label>
+              <select id="rf-type" class="select" required>
+                <option value="receita">Receita / Arrecadação</option>
+                <option value="despesa">Despesa / Custo</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label for="rf-cat">Categoria / Rubrica *</label>
+              <input type="text" id="rf-cat" class="input" list="cat-dl" placeholder="Ex: Tributos, Serviços..." required />
+              <datalist id="cat-dl"></datalist>
+            </div>
+            <div class="fg">
+              <label for="rf-status">Status</label>
+              <select id="rf-status" class="select">
+                <option value="Realizado">Realizado</option>
+                <option value="Previsto">Previsto</option>
+                <option value="Pendente">Pendente</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label for="rf-amt">Valor Realizado (R$) *</label>
+              <input type="number" step="0.01" min="0" id="rf-amt" class="input num" required />
+            </div>
+            <div class="fg">
+              <label for="rf-tgt">Meta / Previsto (R$)</label>
+              <input type="number" step="0.01" min="0" id="rf-tgt" class="input num" value="0" />
+            </div>
+            <div class="fg full">
+              <label for="rf-desc">Descrição *</label>
+              <input type="text" id="rf-desc" class="input" placeholder="Histórico do lançamento financeiro..." required />
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" id="m-rec-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Salvar Lançamento</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- PDF Extraction Review Modal -->
+  <div class="modal-bg" id="m-pdf-preview">
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <div>
+          <h3 id="pdf-prev-title">Revisar Dados Extraídos do PDF</h3>
+          <span class="hint" id="pdf-prev-sub">Confira, ajuste se desejar e confirme a importação fiel para o dashboard</span>
+        </div>
+        <button class="modal-close" id="m-pdf-x" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="table-wrap" style="max-height:360px;overflow-y:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:32px;"><input type="checkbox" id="pdf-cb-all" class="cb" checked /></th>
+                <th style="width:128px;">Data</th>
+                <th style="width:110px;">Tipo</th>
+                <th style="width:165px;">Categoria</th>
+                <th>Descrição</th>
+                <th style="width:115px;">Realizado (R$)</th>
+                <th style="width:105px;">Meta (R$)</th>
+              </tr>
+            </thead>
+            <tbody id="pdf-prev-tbody"></tbody>
+          </table>
+        </div>
+        <details style="margin-top:12px;">
+          <summary style="cursor:pointer;font-size:12px;color:var(--peach);font-weight:600;">Ver texto bruto extraído do PDF (conferência)</summary>
+          <div class="raw-pdf-box" id="pdf-raw-text"></div>
+        </details>
+      </div>
+      <div class="modal-foot">
+        <span class="hint num" id="pdf-prev-count" style="margin-right:auto;">0 selecionado(s)</span>
+        <button type="button" class="btn btn-ghost" id="m-pdf-cancel">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="m-pdf-confirm">Confirmar e Importar do PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div class="modal-bg" id="m-confirm">
+    <div class="modal" style="max-width:420px;">
+      <div class="modal-head">
+        <h3>Confirmar Exclusão</h3>
+        <button class="modal-close" id="m-cnf-x" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="m-cnf-msg" style="margin:0;color:var(--text-secondary);font-size:13px;"></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="m-cnf-cancel">Cancelar</button>
+        <button type="button" class="btn btn-coral" id="m-cnf-ok">Confirmar Exclusão</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toasts"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
