@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Painel Executivo — Relatório Financeiro (2024–2026)</title>
-  <meta name="description" content="Dashboard executivo para acompanhamento financeiro com importação de arquivos .xlsx, .csv e .pdf, sincronização com Google Drive/Sheets (2024–2026), plano de aumento de arrecadação e exportação em PDF." />
+  <title>Painel Executivo — Relatório Financeiro com IA (2024–2026)</title>
+  <meta name="description" content="Dashboard executivo para acompanhamento financeiro com extração por Inteligência Artificial de arquivos .xlsx, .xls, .csv e .pdf, sincronização com Google Drive (2024–2026), plano de aumento de arrecadação e exportação em PDF." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
+  <script src="./vendor/xlsx.full.min.js"></script>
   <script src="./vendor/pdf.min.js"></script>
 </head>
 <body>
@@ -19,30 +20,30 @@
         <div class="brand-mark">RF</div>
         <div>
           <p class="brand-title">Relatório Financeiro</p>
-          <p class="brand-sub">Arrecadação • 2024 a 2026</p>
+          <p class="brand-sub">Arrecadação + IA • 2024–2026</p>
         </div>
       </div>
 
       <div>
         <div class="nav-label">Menu do Painel</div>
         <nav class="nav-list" aria-label="Menu principal">
-          <button class="nav-btn active" data-view="overview">
+          <button type="button" class="nav-btn active" data-view="overview">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
             Visão Geral & Indicadores
           </button>
-          <button class="nav-btn" data-view="import-drive">
+          <button type="button" class="nav-btn" data-view="import-drive">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            Importar XLSX / CSV / PDF & Drive
+            Importar com IA (XLSX/CSV/PDF)
           </button>
-          <button class="nav-btn" data-view="strategy">
+          <button type="button" class="nav-btn" data-view="strategy">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
             Soluções & Metas
           </button>
-          <button class="nav-btn" data-view="records">
+          <button type="button" class="nav-btn" data-view="records">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
             Inserir & Excluir Dados
           </button>
-          <button class="nav-btn" data-view="reports">
+          <button type="button" class="nav-btn" data-view="reports">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             Exportar Relatório PDF
           </button>
@@ -55,7 +56,10 @@
           <span class="num" id="sb-count" style="color:var(--peach)">0 reg.</span>
         </div>
         <div style="font-size:11.5px;color:var(--text-muted);line-height:1.4;" id="sb-status">
-          Pronto para importar .xlsx, .csv, .pdf ou sincronizar Google Drive (2024–2026).
+          Pronto para leitura com IA de .xlsx, .xls, .csv e .pdf.
+        </div>
+        <div style="padding-top:6px;border-top:1px solid var(--border-subtle);font-size:11px;color:var(--peach);" id="sb-ai-mode">
+          Motor: IA Local Inteligente
         </div>
       </div>
     </aside>
@@ -68,12 +72,12 @@
           <p id="view-subtitle">Acompanhamento fiel de arrecadação, metas e despesas (2024–2026)</p>
         </div>
         <div class="topbar-actions">
-          <button class="btn btn-primary" id="btn-top-insert">
+          <button type="button" class="btn btn-primary" id="btn-top-insert">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Inserir Dado
           </button>
-          <button class="btn btn-secondary" id="btn-top-import">Importar XLSX / CSV / PDF</button>
-          <button class="btn btn-coral" id="btn-top-pdf">Exportar PDF</button>
+          <button type="button" class="btn btn-secondary" id="btn-top-import">Importar com IA</button>
+          <button type="button" class="btn btn-coral" id="btn-top-pdf">Exportar PDF</button>
         </div>
       </header>
 
@@ -82,10 +86,10 @@
         <div class="filter-field">
           <label>Ano / Exercício</label>
           <div class="year-seg" id="year-seg">
-            <button class="year-btn active" data-year="">Todos</button>
-            <button class="year-btn" data-year="2024">2024</button>
-            <button class="year-btn" data-year="2025">2025</button>
-            <button class="year-btn" data-year="2026">2026</button>
+            <button type="button" class="year-btn active" data-year="">Todos</button>
+            <button type="button" class="year-btn" data-year="2024">2024</button>
+            <button type="button" class="year-btn" data-year="2025">2025</button>
+            <button type="button" class="year-btn" data-year="2026">2026</button>
           </div>
         </div>
         <div class="filter-field">
@@ -102,7 +106,7 @@
         </div>
         <div class="filter-field">
           <label>&nbsp;</label>
-          <button class="btn btn-ghost btn-sm" id="btn-clear-filters">Limpar Filtros</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-clear-filters">Limpar Filtros</button>
         </div>
       </section>
 
@@ -199,47 +203,103 @@
                 <h2 class="panel-title">Soluções para Aumento de Arrecadação e Manutenção da Meta</h2>
                 <p class="panel-sub">Diagnóstico fiel aos dados com impacto estimado em reais</p>
               </div>
-              <button class="btn btn-secondary btn-sm" id="btn-go-strat">Abrir Simulador & Metas</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-go-strat">Abrir Simulador & Metas</button>
             </div>
             <div id="ov-diag"></div>
             <div class="rec-grid" id="ov-recs"></div>
           </article>
         </section>
 
-        <!-- VIEW 2: IMPORT XLSX / CSV / PDF & GOOGLE DRIVE -->
+        <!-- VIEW 2: IMPORT WITH AI + GOOGLE DRIVE -->
         <section class="view-panel" id="view-import-drive">
+          <!-- AI Engine Configuration Panel -->
+          <article class="ai-panel">
+            <div class="panel-head" style="margin-bottom:12px;">
+              <div>
+                <h2 class="panel-title">Motor de Inteligência Artificial para Leitura de Arquivos</h2>
+                <p class="panel-sub">Use IA generativa (Google Gemini ou OpenAI) para ler qualquer PDF — inclusive escaneados/DRE/balancetes — e planilhas complexas .XLSX/.CSV com precisão</p>
+              </div>
+              <span class="ai-status-pill local" id="ai-status-pill">IA Local Inteligente (Offline)</span>
+            </div>
+
+            <div class="form-grid-3">
+              <div class="fg">
+                <label for="ai-provider">Provedor de IA</label>
+                <select id="ai-provider" class="select">
+                  <option value="gemini">Google Gemini (Lê PDF nativo/escaneado, XLSX e CSV)</option>
+                  <option value="openai">OpenAI GPT (Lê PDF/Visão, XLSX e CSV)</option>
+                  <option value="local">IA Local Inteligente (Offline / Sem chave)</option>
+                </select>
+              </div>
+
+              <div class="fg">
+                <label for="ai-model">Modelo</label>
+                <select id="ai-model" class="select">
+                  <option value="gemini-2.5-flash">gemini-2.5-flash (Recomendado)</option>
+                  <option value="gemini-2.0-flash">gemini-2.0-flash (Rápido)</option>
+                  <option value="gemini-2.5-pro">gemini-2.5-pro (Alta precisão)</option>
+                </select>
+              </div>
+
+              <div class="fg" id="ai-key-wrap">
+                <label for="ai-key">Chave de API (salva apenas no seu navegador)</label>
+                <div class="key-row">
+                  <input type="password" id="ai-key" class="input num" placeholder="Cole sua chave Gemini ou OpenAI..." autocomplete="off" />
+                  <button type="button" class="btn btn-ghost btn-sm" id="btn-toggle-key" title="Mostrar/Ocultar">Ver</button>
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-top:12px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;">
+              <span class="hint">
+                Sem chave? Crie gratuitamente em <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--peach);">Google AI Studio (Gemini)</a>. Sem chave configurada, o painel usa automaticamente a <strong>IA Local Inteligente</strong>.
+              </span>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-save-ai">Salvar Config. IA</button>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-test-ai">Testar Conexão IA</button>
+              </div>
+            </div>
+          </article>
+
           <div class="grid-2">
             <!-- Multi-Format File Import -->
             <article class="panel">
               <div class="panel-head">
                 <div>
-                  <h2 class="panel-title">Importar Arquivos .XLSX, .CSV e .PDF</h2>
-                  <p class="panel-sub">Arraste planilhas ou relatórios financeiros em PDF para extrair e importar os dados</p>
+                  <h2 class="panel-title">Importar Arquivos .XLSX, .XLS, .CSV e .PDF</h2>
+                  <p class="panel-sub">A IA lê o conteúdo, identifica datas, receitas, despesas, categorias e metas</p>
                 </div>
                 <div style="display:flex;gap:6px;">
-                  <button class="btn btn-ghost btn-sm" id="btn-dl-csv-tpl">Modelo .CSV</button>
+                  <button type="button" class="btn btn-ghost btn-sm" id="btn-dl-csv-tpl">Modelo .CSV</button>
                 </div>
               </div>
 
-              <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Área para enviar arquivos XLSX, CSV ou PDF">
+              <!-- Input placed OUTSIDE dropzone to prevent event bubbling bugs -->
+              <input type="file" id="file-picker" accept=".xlsx,.xls,.xlsm,.ods,.csv,.tsv,.txt,.pdf,application/pdf" multiple hidden />
+
+              <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Área para enviar arquivos XLSX, XLS, CSV ou PDF">
                 <div class="dz-icon">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
                 </div>
-                <strong style="font-size:14px;">Arraste arquivos .xlsx, .csv ou .pdf aqui</strong>
-                <span class="hint">Ou clique para selecionar • Leitura inteligente de tabelas, datas BR e valores R$</span>
+                <strong style="font-size:14px;">Arraste arquivos .xlsx, .xls, .csv ou .pdf aqui</strong>
+                <span class="hint">Ou clique para selecionar • Extração inteligente + revisão antes de salvar</span>
                 <div class="format-badges">
-                  <span class="fmt-badge">.XLSX (Excel)</span>
+                  <span class="fmt-badge">.XLSX / .XLS (Excel)</span>
                   <span class="fmt-badge">.CSV / .TSV</span>
-                  <span class="fmt-badge pdf">.PDF (Relatórios e Extratos)</span>
+                  <span class="fmt-badge pdf">.PDF (Texto ou Escaneado via IA)</span>
                 </div>
-                <input type="file" id="file-picker" accept=".xlsx,.xlsm,.csv,.tsv,.txt,.pdf,application/pdf" multiple hidden />
+              </div>
+
+              <div class="ai-progress" id="ai-progress">
+                <div class="spinner"></div>
+                <span id="ai-progress-msg">Analisando arquivo com Inteligência Artificial...</span>
               </div>
 
               <div class="form-grid" style="margin-top:14px;">
                 <div class="fg">
-                  <label for="up-year">Ano Padrão (se o arquivo não informar ano)</label>
+                  <label for="up-year">Ano Padrão (caso o documento não informe)</label>
                   <select id="up-year" class="select">
-                    <option value="">Auto-detectar pelas datas / nome</option>
+                    <option value="">Auto-detectar pelo documento / nome</option>
                     <option value="2024">2024</option>
                     <option value="2025">2025</option>
                     <option value="2026">2026</option>
@@ -247,14 +307,13 @@
                 </div>
                 <div class="fg" style="justify-content:flex-end;">
                   <label>&nbsp;</label>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                    <button class="btn btn-primary" id="btn-pick-files" style="flex:1;">Enviar .XLSX / .CSV / .PDF</button>
-                  </div>
+                  <button type="button" class="btn btn-primary" id="btn-pick-files">Selecionar Arquivos para IA</button>
                 </div>
               </div>
-              <p class="hint" style="margin-top:10px;">
-                <strong>Importação de PDF:</strong> extrai automaticamente linhas com datas, descrições, categorias e valores monetários (`R$ 1.234,56`) e abre uma <strong>pré-visualização editável</strong> antes de gravar, garantindo 100% de fidelidade aos dados.
-              </p>
+              <label class="check-box" style="margin-top:10px;">
+                <input type="checkbox" id="opt-always-review" class="cb" checked />
+                Sempre abrir tela de revisão dos dados extraídos antes de gravar (recomendado para 100% de fidelidade)
+              </label>
             </article>
 
             <!-- Google Drive / Sheets Auto-Sync -->
@@ -264,7 +323,7 @@
                   <h2 class="panel-title">Sincronização Automática — Google Drive (2024–2026)</h2>
                   <p class="panel-sub">Conecte links das Planilhas Google do seu Drive para atualização contínua</p>
                 </div>
-                <button class="btn btn-primary btn-sm" id="btn-sync-drv">Sincronizar Agora</button>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-sync-drv">Sincronizar Agora</button>
               </div>
 
               <div class="diag-box">
@@ -296,7 +355,7 @@
                 </div>
               </div>
               <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-                <button class="btn btn-secondary btn-sm" id="btn-save-drv">Salvar Configuração</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-save-drv">Salvar Configuração</button>
               </div>
             </article>
           </div>
@@ -313,7 +372,7 @@
                 <thead>
                   <tr>
                     <th>Arquivo / Origem</th>
-                    <th>Formato / Tipo</th>
+                    <th>Formato / Motor</th>
                     <th class="tr">Registros</th>
                     <th>Importado em</th>
                     <th class="tr">Ação</th>
@@ -350,7 +409,7 @@
                 </div>
               </div>
               <div style="margin-top:14px;display:flex;justify-content:flex-end;">
-                <button class="btn btn-primary" id="btn-save-targets">Salvar Metas Anuais</button>
+                <button type="button" class="btn btn-primary" id="btn-save-targets">Salvar Metas Anuais</button>
               </div>
             </article>
 
@@ -415,9 +474,9 @@
                 <p class="panel-sub">Gerencie seus dados manualmente ou remova lançamentos individuais e em lote</p>
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:8px;">
-                <button class="btn btn-primary btn-sm" id="btn-rec-add">+ Inserir Novo Dado</button>
-                <button class="btn btn-coral btn-sm" id="btn-del-sel" disabled>Excluir Selecionados (0)</button>
-                <button class="btn btn-ghost btn-sm" id="btn-del-all">Limpar Toda a Base</button>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-rec-add">+ Inserir Novo Dado</button>
+                <button type="button" class="btn btn-coral btn-sm" id="btn-del-sel" disabled>Excluir Selecionados (0)</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-del-all">Limpar Toda a Base</button>
               </div>
             </div>
 
@@ -467,7 +526,7 @@
               <p style="font-size:13px;color:var(--text-secondary);margin:0 0 18px;">
                 Gera e baixa imediatamente um arquivo <strong>.PDF</strong> executivo contendo resumo de indicadores financeiros, comparativo anual 2024–2026, diagnóstico de desvio da meta, soluções para aumento de arrecadação, detalhamento por categoria e lançamentos.
               </p>
-              <button class="btn btn-primary" id="btn-pdf-full">Baixar Relatório Completo (PDF)</button>
+              <button type="button" class="btn btn-primary" id="btn-pdf-full">Baixar Relatório Completo (PDF)</button>
             </article>
 
             <article class="panel">
@@ -479,11 +538,11 @@
               </div>
 
               <div class="preset-row">
-                <button class="btn btn-ghost btn-sm pdf-pre" data-s="2024-01-01" data-e="2024-12-31">Ano 2024</button>
-                <button class="btn btn-ghost btn-sm pdf-pre" data-s="2025-01-01" data-e="2025-12-31">Ano 2025</button>
-                <button class="btn btn-ghost btn-sm pdf-pre" data-s="2026-01-01" data-e="2026-12-31">Ano 2026</button>
-                <button class="btn btn-ghost btn-sm pdf-pre" data-days="30">Últimos 30 dias</button>
-                <button class="btn btn-ghost btn-sm pdf-pre" data-days="90">Últimos 90 dias</button>
+                <button type="button" class="btn btn-ghost btn-sm pdf-pre" data-s="2024-01-01" data-e="2024-12-31">Ano 2024</button>
+                <button type="button" class="btn btn-ghost btn-sm pdf-pre" data-s="2025-01-01" data-e="2025-12-31">Ano 2025</button>
+                <button type="button" class="btn btn-ghost btn-sm pdf-pre" data-s="2026-01-01" data-e="2026-12-31">Ano 2026</button>
+                <button type="button" class="btn btn-ghost btn-sm pdf-pre" data-days="30">Últimos 30 dias</button>
+                <button type="button" class="btn btn-ghost btn-sm pdf-pre" data-days="90">Últimos 90 dias</button>
               </div>
 
               <div class="form-grid">
@@ -508,7 +567,7 @@
                 <label class="check-box"><input type="checkbox" id="opt-ann" class="cb" checked /> Comparativo 2024–2026</label>
               </div>
 
-              <button class="btn btn-primary" id="btn-pdf-period">Gerar Relatório por Datas (PDF)</button>
+              <button type="button" class="btn btn-primary" id="btn-pdf-period">Gerar Relatório por Datas (PDF)</button>
             </article>
           </div>
         </section>
@@ -521,7 +580,7 @@
     <div class="modal">
       <div class="modal-head">
         <h3 id="m-rec-title">Inserir Novo Lançamento</h3>
-        <button class="modal-close" id="m-rec-x" aria-label="Fechar">&times;</button>
+        <button type="button" class="modal-close" id="m-rec-x" aria-label="Fechar">&times;</button>
       </div>
       <form id="rec-form">
         <div class="modal-body">
@@ -573,17 +632,22 @@
     </div>
   </div>
 
-  <!-- PDF Extraction Review Modal -->
+  <!-- AI Extraction Review Modal (for PDF, XLSX, CSV) -->
   <div class="modal-bg" id="m-pdf-preview">
     <div class="modal modal-wide">
       <div class="modal-head">
         <div>
-          <h3 id="pdf-prev-title">Revisar Dados Extraídos do PDF</h3>
+          <h3 id="pdf-prev-title">Revisar Dados Extraídos</h3>
           <span class="hint" id="pdf-prev-sub">Confira, ajuste se desejar e confirme a importação fiel para o dashboard</span>
         </div>
-        <button class="modal-close" id="m-pdf-x" aria-label="Fechar">&times;</button>
+        <button type="button" class="modal-close" id="m-pdf-x" aria-label="Fechar">&times;</button>
       </div>
       <div class="modal-body">
+        <div class="ai-summary-note" id="ai-summary-note"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+          <span class="hint num" id="pdf-prev-totals"></span>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-pdf-add-row">+ Adicionar Linha Manual</button>
+        </div>
         <div class="table-wrap" style="max-height:360px;overflow-y:auto;">
           <table>
             <thead>
@@ -601,14 +665,14 @@
           </table>
         </div>
         <details style="margin-top:12px;">
-          <summary style="cursor:pointer;font-size:12px;color:var(--peach);font-weight:600;">Ver texto bruto extraído do PDF (conferência)</summary>
+          <summary style="cursor:pointer;font-size:12px;color:var(--peach);font-weight:600;">Ver conteúdo bruto lido do arquivo (conferência)</summary>
           <div class="raw-pdf-box" id="pdf-raw-text"></div>
         </details>
       </div>
       <div class="modal-foot">
         <span class="hint num" id="pdf-prev-count" style="margin-right:auto;">0 selecionado(s)</span>
         <button type="button" class="btn btn-ghost" id="m-pdf-cancel">Cancelar</button>
-        <button type="button" class="btn btn-primary" id="m-pdf-confirm">Confirmar e Importar do PDF</button>
+        <button type="button" class="btn btn-primary" id="m-pdf-confirm">Confirmar e Importar no Dashboard</button>
       </div>
     </div>
   </div>
@@ -618,7 +682,7 @@
     <div class="modal" style="max-width:420px;">
       <div class="modal-head">
         <h3>Confirmar Exclusão</h3>
-        <button class="modal-close" id="m-cnf-x" aria-label="Fechar">&times;</button>
+        <button type="button" class="modal-close" id="m-cnf-x" aria-label="Fechar">&times;</button>
       </div>
       <div class="modal-body">
         <p id="m-cnf-msg" style="margin:0;color:var(--text-secondary);font-size:13px;"></p>

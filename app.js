@@ -6,6 +6,10 @@
   }
 
   const STORAGE_KEY = "rf_exec_dashboard_v2";
+  const AI_CFG_KEY = "rf_exec_ai_cfg_v1";
+  const IDB_NAME = "rf_finance_idb_v1";
+  const IDB_STORE = "kv";
+
   const MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
   const MONTH_MAP = {
     jan:1, janeiro:1, january:1, "01":1, "1":1,
@@ -22,9 +26,24 @@
     dez:12, dezembro:12, dec:12, december:12, "12":12
   };
 
+  const PROVIDER_MODELS = {
+    gemini: [
+      { id: "gemini-2.5-flash", label: "gemini-2.5-flash (Recomendado — PDF + XLSX + CSV)" },
+      { id: "gemini-2.0-flash", label: "gemini-2.0-flash (Rápido)" },
+      { id: "gemini-2.5-pro", label: "gemini-2.5-pro (Máxima precisão)" }
+    ],
+    openai: [
+      { id: "gpt-4o-mini", label: "gpt-4o-mini (Recomendado — Rápido + Visão)" },
+      { id: "gpt-4o", label: "gpt-4o (Alta precisão + Visão)" }
+    ],
+    local: [
+      { id: "local-smart-v2", label: "Motor Heurístico Financeiro PT-BR (Offline)" }
+    ]
+  };
+
   const VIEW_META = {
     overview: ["Visão Geral Financeira", "Acompanhamento fiel de arrecadação, metas e despesas (2024–2026)"],
-    "import-drive": ["Importar XLSX / CSV / PDF & Google Drive", "Envie arquivos .xlsx, .csv ou .pdf e sincronize planilhas do Google Drive automaticamente"],
+    "import-drive": ["Importar com IA (XLSX / CSV / PDF) & Drive", "Leitura inteligente de planilhas e PDFs com Inteligência Artificial + sincronização Drive"],
     strategy: ["Soluções de Arrecadação & Metas", "Metas anuais, simulador What-If e plano de correção fiel aos dados"],
     records: ["Inserir & Excluir Lançamentos", "Controle operacional completo com edição e exclusão individual ou em lote"],
     reports: ["Exportar Relatório Executivo em PDF", "Gere o relatório completo ou filtrado por intervalo de datas em formato PDF"]
@@ -32,7 +51,19 @@
 
   const $ = (id) => document.getElementById(id);
 
-  const store = loadStore();
+  const store = {
+    nextId: 1,
+    records: [],
+    targets: { 2024: 0, 2025: 0, 2026: 0 },
+    files: [],
+    driveLinks: "",
+    driveAuto: true,
+    driveInterval: 60,
+    lastDriveSync: ""
+  };
+
+  const aiCfg = loadAiCfg();
+
   const ui = {
     view: "overview",
     filters: { year: "", start: "", end: "", cat: "Todas", type: "", search: "" },
@@ -40,43 +71,96 @@
     confirmFn: null,
     lastAnalytics: null,
     chartHit: { monthly: [], annual: [], dev: [] },
-    pdfPending: null,
+    reviewQueue: [],
+    currentReview: null,
     driveTimer: null
   };
 
-  function loadStore() {
+  // IndexedDB Storage with localStorage fallback & migration
+  function openIdb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) return reject(new Error("IndexedDB indisponível"));
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+          req.result.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbGet(key) {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("rf_exec_dashboard_v1");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return {
-          nextId: parsed.nextId || 1,
-          records: Array.isArray(parsed.records) ? parsed.records : [],
-          targets: parsed.targets || { 2024: 0, 2025: 0, 2026: 0 },
-          files: Array.isArray(parsed.files) ? parsed.files : [],
-          driveLinks: parsed.driveLinks || "",
-          driveAuto: parsed.driveAuto !== undefined ? parsed.driveAuto : true,
-          driveInterval: parsed.driveInterval || 60,
-          lastDriveSync: parsed.lastDriveSync || ""
-        };
-      }
-    } catch {}
-    return {
-      nextId: 1,
-      records: [],
-      targets: { 2024: 0, 2025: 0, 2026: 0 },
-      files: [],
-      driveLinks: "",
-      driveAuto: true,
-      driveInterval: 60,
-      lastDriveSync: ""
-    };
+      const db = await openIdb();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readonly");
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    } catch { return null; }
+  }
+
+  async function idbSet(key, value) {
+    try {
+      const db = await openIdb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      return true;
+    } catch { return false; }
+  }
+
+  async function loadStoreAsync() {
+    let parsed = await idbGet("main_store");
+    if (!parsed) {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem("rf_exec_dashboard_v1");
+        if (raw) parsed = JSON.parse(raw);
+      } catch {}
+    }
+    if (parsed && typeof parsed === "object") {
+      store.nextId = parsed.nextId || 1;
+      store.records = Array.isArray(parsed.records) ? parsed.records : [];
+      store.targets = parsed.targets || { 2024: 0, 2025: 0, 2026: 0 };
+      store.files = Array.isArray(parsed.files) ? parsed.files : [];
+      store.driveLinks = parsed.driveLinks || "";
+      store.driveAuto = parsed.driveAuto !== undefined ? parsed.driveAuto : true;
+      store.driveInterval = parsed.driveInterval || 60;
+      store.lastDriveSync = parsed.lastDriveSync || "";
+    }
   }
 
   function saveStore() {
+    idbSet("main_store", store);
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); } catch {}
   }
 
+  function loadAiCfg() {
+    try {
+      const raw = localStorage.getItem(AI_CFG_KEY);
+      if (raw) {
+        const c = JSON.parse(raw);
+        return {
+          provider: c.provider || (c.apiKey ? "gemini" : "local"),
+          model: c.model || "gemini-2.5-flash",
+          apiKey: c.apiKey || ""
+        };
+      }
+    } catch {}
+    return { provider: "gemini", model: "gemini-2.5-flash", apiKey: "" };
+  }
+
+  function saveAiCfg() {
+    try { localStorage.setItem(AI_CFG_KEY, JSON.stringify(aiCfg)); } catch {}
+  }
+
+  // Formatting & Helpers
   function fmtBRL(v) {
     return Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
   }
@@ -96,7 +180,17 @@
     el.className = `toast ${err ? "err" : ""}`;
     el.textContent = msg;
     $("toasts").appendChild(el);
-    setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 220ms"; setTimeout(() => el.remove(), 230); }, 4200);
+    setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 220ms"; setTimeout(() => el.remove(), 230); }, 4500);
+  }
+
+  function setProgress(active, msg = "") {
+    const box = $("ai-progress");
+    if (active) {
+      $("ai-progress-msg").textContent = msg;
+      box.classList.add("active");
+    } else {
+      box.classList.remove("active");
+    }
   }
 
   function normText(s) {
@@ -109,9 +203,11 @@
     if (typeof v === "number" && !isNaN(v)) return v;
     if (v === null || v === undefined) return null;
     let s = String(v).trim();
-    if (!s || /^(-|—|n\/a|null)$/i.test(s)) return null;
+    if (!s || /^(-|—|–|n\/a|na|null|none)$/i.test(s)) return null;
     let neg = false;
     if (s.startsWith("(") && s.endsWith(")")) { neg = true; s = s.slice(1, -1).trim(); }
+    if (/\s+D$/i.test(s)) { neg = true; s = s.replace(/\s+D$/i, "").trim(); }
+    if (/\s+C$/i.test(s)) { s = s.replace(/\s+C$/i, "").trim(); }
     s = s.replace(/[rR]\$|\$|€|£|%|\s/g, "");
     if (s.startsWith("-") || s.startsWith("−")) { neg = true; s = s.slice(1); }
     else if (s.startsWith("+")) s = s.slice(1);
@@ -128,6 +224,9 @@
   }
 
   function parseDateVal(v, fbYear, fbMonth) {
+    if (v instanceof Date && !isNaN(v.getTime())) {
+      return v.toISOString().slice(0, 10);
+    }
     if (typeof v === "number" && v >= 35000 && v <= 60000) {
       const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(v) * 86400000);
       return d.toISOString().slice(0, 10);
@@ -135,8 +234,11 @@
     const s = String(v ?? "").trim();
     if (!s) return fbYear && fbMonth ? `${fbYear}-${String(fbMonth).padStart(2,"0")}-15` : null;
     let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-    if (m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
-    m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/);
+    if (m) {
+      const mo = Number(m[2]), dy = Number(m[3]);
+      if (mo >= 1 && mo <= 12 && dy >= 1 && dy <= 31) return `${m[1]}-${String(mo).padStart(2,"0")}-${String(dy).padStart(2,"0")}`;
+    }
+    m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
     if (m) {
       let yr = Number(m[3]); if (yr < 100) yr += 2000;
       const mo = Number(m[2]), dy = Number(m[1]);
@@ -158,9 +260,54 @@
 
   function classifyType(raw, amt) {
     const n = normText(raw);
-    if (/(despesa|custo|gasto|saida|debito|pagamento|folha|encargo|fornecedor|expense|cost)/.test(n)) return "despesa";
-    if (/(receita|arrecadacao|entrada|credito|faturamento|tributo|imposto|venda|convenio|repasse|taxa|servico|revenue|income)/.test(n)) return "receita";
+    if (/(despesa|custo|gasto|saida|debito|pagamento|folha|encargo|fornecedor|aluguel|tarifa|imposto_pago|tributo_pago|expense|cost|outflow)/.test(n)) return "despesa";
+    if (/(receita|arrecadacao|entrada|credito|faturamento|tributo|imposto|venda|convenio|repasse|taxa|servico|iptu|iss|icms|contribuicao|revenue|income|inflow)/.test(n)) return "receita";
     return amt < 0 ? "despesa" : "receita";
+  }
+
+  function inferCategoryFromText(text, type) {
+    const n = normText(text);
+    if (/tributo|imposto|iptu|iss|icms|itbi|irrf|taxa_fiscal/.test(n)) return "Tributos e Impostos";
+    if (/servico|taxa|emolumento|tarifa_receb/.test(n)) return "Serviços e Taxas";
+    if (/convenio|repasse|transferencia|fpm|fundeb|sus|subvencao/.test(n)) return "Convênios e Repasses";
+    if (/venda|faturamento|comercial|cliente|mensalidade|assinatura/.test(n)) return "Receita Operacional";
+    if (/juro|rendimento|aplicacao|financeir/.test(n)) return "Receitas Financeiras";
+    if (/folha|salario|encargo|pessoal|inss|fgts|pro_labore/.test(n)) return "Folha e Encargos";
+    if (/aluguel|energia|agua|manutencao|operacional|fornecedor|material/.test(n)) return "Custos Operacionais";
+    if (/software|sistema|tecnologia|ti|nuvem|servidor|internet/.test(n)) return "Tecnologia e Infraestrutura";
+    return type === "receita" ? "Arrecadação Geral" : "Despesas Operacionais";
+  }
+
+  // Smart Header-Row Scoring for XLSX / CSV
+  const HEADER_KEYWORDS = [
+    "data","date","dt","competencia","periodo","mes","ano","exercicio","vencimento","emissao",
+    "tipo","natureza","movimento","categoria","rubrica","conta","centro","tributo","grupo",
+    "descricao","historico","detalhe","item","lancamento","valor","arrecadado","realizado",
+    "receita","arrecadacao","despesa","custo","gasto","meta","previsto","orcado","status",
+    "jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez","janeiro","fevereiro"
+  ];
+
+  function detectBestHeaderRow(nonEmpty) {
+    let bestIdx = 0, bestScore = -1;
+    const limit = Math.min(25, nonEmpty.length);
+    for (let i = 0; i < limit; i++) {
+      const row = nonEmpty[i];
+      let score = 0, strCount = 0;
+      for (const cell of row) {
+        if (cell === null || cell === undefined) continue;
+        const s = String(cell).trim();
+        if (!s) continue;
+        if (parseNum(s) === null) strCount++;
+        const n = normText(s);
+        for (const kw of HEADER_KEYWORDS) {
+          if (n === kw) { score += 4; break; }
+          if (n.includes(kw)) { score += 2; break; }
+        }
+      }
+      if (strCount >= 2) score += 1;
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+    return bestIdx;
   }
 
   function findCol(norms, cands) {
@@ -169,19 +316,32 @@
     return -1;
   }
 
-  function parseTabularMatrix(rows, filename, sourceLabel, sourceFileId, defYear) {
+  function parseTabularMatrix(rows, contextName, defYear) {
     const nonEmpty = rows.filter(r => r && r.some(c => c !== null && c !== undefined && String(c).trim() !== ""));
     if (nonEmpty.length < 2) return [];
-    let hIdx = 0;
-    for (let i = 0; i < Math.min(10, nonEmpty.length); i++) {
-      if (nonEmpty[i].filter(c => typeof c === "string" && c.trim()).length >= 2) { hIdx = i; break; }
+
+    // Scan top metadata rows for a fallback document year & month
+    let docYear = defYear || null;
+    let docMonth = null;
+    const fnYr = (contextName || "").match(/(202\d)/);
+    if (!docYear && fnYr) docYear = Number(fnYr[1]);
+
+    const hIdx = detectBestHeaderRow(nonEmpty);
+    for (let i = 0; i < hIdx; i++) {
+      const joined = nonEmpty[i].map(c => String(c ?? "")).join(" ");
+      const ym = joined.match(/\b(202[0-9])\b/);
+      if (!docYear && ym) docYear = Number(ym[1]);
+      for (const tok of normText(joined).split("_")) {
+        if (MONTH_MAP[tok] && !/^\d+$/.test(tok) && !docMonth) docMonth = MONTH_MAP[tok];
+      }
     }
+    const fileYear = docYear || new Date().getFullYear();
+
     const headers = nonEmpty[hIdx].map(c => String(c ?? "").trim());
     const norms = headers.map(normText);
     const dataRows = nonEmpty.slice(hIdx + 1);
-    const yrMatch = (filename || "").match(/(202\d)/);
-    const fileYear = defYear || (yrMatch ? Number(yrMatch[1]) : new Date().getFullYear());
 
+    // Check pivoted wide monthly table (Jan..Dez columns)
     const monthCols = [];
     norms.forEach((h, idx) => {
       const first = h.split("_")[0];
@@ -196,7 +356,8 @@
       const yrCol = findCol(norms, ["ano","exercicio","year"]);
       for (const r of dataRows) {
         const cat = String(r[catCol] ?? "").trim();
-        if (!cat || normText(cat).startsWith("total")) continue;
+        const nc = normText(cat);
+        if (!cat || /^(total|subtotal|soma|saldo)/.test(nc)) continue;
         let rYr = fileYear;
         if (yrCol >= 0) { const y = parseNum(r[yrCol]); if (y && y >= 2000 && y <= 2100) rYr = Math.floor(y); }
         const rawT = typeCol >= 0 ? r[typeCol] : cat;
@@ -206,41 +367,50 @@
           const ym = norms[ci].match(/(202\d)/);
           const cy = ym ? Number(ym[1]) : rYr;
           out.push({
+            checked: true,
             date: `${cy}-${String(mo).padStart(2,"0")}-15`,
             type: classifyType(rawT, amt),
             category: cat,
-            description: `${cat} (${String(mo).padStart(2,"0")}/${cy})`,
+            description: `${cat} (${MONTHS_PT[mo-1]}/${cy})`,
             amount: Math.abs(amt),
             target_amount: 0,
-            status: "Realizado",
-            source: sourceLabel,
-            source_file_id: sourceFileId,
-            is_demo: false
+            status: "Realizado"
           });
         }
       }
       return out;
     }
 
-    const cDate = findCol(norms, ["data","date","dt","competencia","periodo","vencimento"]);
+    const cDate = findCol(norms, ["data","date","dt","competencia","periodo","vencimento","emissao","dt_pgto","pagamento"]);
     const cYear = findCol(norms, ["ano","exercicio","year"]);
     const cMon  = findCol(norms, ["mes","month","referencia"]);
-    const cType = findCol(norms, ["tipo","natureza","movimento","classificacao","type"]);
-    const cCat  = findCol(norms, ["categoria","rubrica","centro_de_custo","tributo","grupo","conta","category"]);
-    const cDesc = findCol(norms, ["descricao","historico","detalhe","item","lancamento","nome","description"]);
+    const cType = findCol(norms, ["tipo","natureza","movimento","classificacao","type","d_c","dc"]);
+    const cCat  = findCol(norms, ["categoria","rubrica","centro_de_custo","tributo","grupo","conta","classif","category"]);
+    const cDesc = findCol(norms, ["descricao","historico","detalhe","item","lancamento","nome","favorecido","description","observacao"]);
     const cStat = findCol(norms, ["status","situacao","estado"]);
-    const cAmt  = findCol(norms, ["valor_realizado","arrecadado","valor_arrecadado","realizado","valor","amount","total"]);
-    const cRev  = findCol(norms, ["receita","receitas","arrecadacao","entrada","faturamento"]);
-    const cExp  = findCol(norms, ["despesa","despesas","custo","gasto","saida"]);
-    const cTgt  = findCol(norms, ["meta","meta_arrecadacao","valor_previsto","previsto","orcado","target","budget"]);
+    const cAmt  = findCol(norms, ["valor_realizado","arrecadado","valor_arrecadado","realizado","valor_liquido","valor_total","valor_bruto","valor","amount","montante","total"]);
+    const cRev  = findCol(norms, ["receita","receitas","arrecadacao","entrada","entradas","credito","faturamento"]);
+    const cExp  = findCol(norms, ["despesa","despesas","custo","custos","gasto","gastos","saida","saidas","debito"]);
+    const cTgt  = findCol(norms, ["meta","meta_arrecadacao","valor_previsto","previsto","orcado","target","budget","planejado"]);
     const dual  = cRev >= 0 && cExp >= 0 && cRev !== cExp && cType < 0;
+
+    // Fallback: if no amount column matched by header name, pick the rightmost mostly-numeric column
+    let fallbackAmtCol = -1;
+    if (cAmt < 0 && cRev < 0 && cExp < 0) {
+      for (let col = norms.length - 1; col >= 0; col--) {
+        if (col === cDate || col === cYear || col === cMon) continue;
+        const numHits = dataRows.slice(0, 20).filter(r => parseNum(r[col]) !== null).length;
+        if (numHits >= Math.max(1, Math.min(3, dataRows.length / 2))) { fallbackAmtCol = col; break; }
+      }
+    }
 
     for (const r of dataRows) {
       const f0 = normText(r[0]);
-      if (["total","total_geral","subtotal","soma"].includes(f0)) continue;
+      if (["total","total_geral","subtotal","soma","saldo_final","saldo_anterior"].includes(f0)) continue;
+
       let rYr = fileYear;
       if (cYear >= 0) { const y = parseNum(r[cYear]); if (y && y >= 2000 && y <= 2100) rYr = Math.floor(y); }
-      let rMo = null;
+      let rMo = docMonth;
       if (cMon >= 0) {
         const mv = r[cMon]; const mn = normText(mv);
         if (MONTH_MAP[mn]) rMo = MONTH_MAP[mn];
@@ -248,36 +418,42 @@
       }
       let dStr = parseDateVal(cDate >= 0 ? r[cDate] : null, rYr, rMo);
       if (!dStr && rMo) dStr = `${rYr}-${String(rMo).padStart(2,"0")}-15`;
-      if (!dStr) continue;
+      // If spreadsheet has no per-row date at all, use document fallback date so valid rows are NOT silently dropped!
+      if (!dStr) dStr = `${rYr}-${String(rMo || 1).padStart(2,"0")}-15`;
 
-      const cat = (cCat >= 0 && String(r[cCat] ?? "").trim()) || "Arrecadação Geral";
-      const desc = (cDesc >= 0 && String(r[cDesc] ?? "").trim()) || "";
+      const rawCat = cCat >= 0 ? String(r[cCat] ?? "").trim() : "";
+      const rawDesc = cDesc >= 0 ? String(r[cDesc] ?? "").trim() : (cCat < 0 ? String(r[0] ?? "").trim() : "");
       const status = (cStat >= 0 && String(r[cStat] ?? "").trim()) || "Realizado";
       const tgt = Math.abs(parseNum(cTgt >= 0 ? r[cTgt] : 0) || 0);
 
       if (dual) {
         const rv = parseNum(r[cRev]);
         const ev = parseNum(r[cExp]);
-        if (rv) out.push({ date:dStr, type:"receita", category:cat, description:desc||`Arrecadação — ${cat}`, amount:Math.abs(rv), target_amount:tgt, status, source:sourceLabel, source_file_id:sourceFileId, is_demo:false });
-        if (ev) out.push({ date:dStr, type:"despesa", category:cat==="Arrecadação Geral"?"Despesas Operacionais":cat, description:desc||`Despesa — ${cat}`, amount:Math.abs(ev), target_amount:0, status, source:sourceLabel, source_file_id:sourceFileId, is_demo:false });
+        if (rv) out.push({ checked:true, date:dStr, type:"receita", category:rawCat || inferCategoryFromText(rawDesc, "receita"), description:rawDesc || rawCat || "Arrecadação", amount:Math.abs(rv), target_amount:tgt, status });
+        if (ev) out.push({ checked:true, date:dStr, type:"despesa", category:rawCat || inferCategoryFromText(rawDesc, "despesa"), description:rawDesc || rawCat || "Despesa", amount:Math.abs(ev), target_amount:0, status });
       } else {
-        const idx = cAmt >= 0 ? cAmt : (cRev >= 0 ? cRev : cExp);
+        const idx = cAmt >= 0 ? cAmt : (cRev >= 0 ? cRev : (cExp >= 0 ? cExp : fallbackAmtCol));
         const amt = parseNum(idx >= 0 ? r[idx] : null);
-        if (amt === null) continue;
-        let rt = cType >= 0 ? r[cType] : (idx === cExp ? "despesa" : "receita");
+        if (amt === null || amt === 0) continue;
+        const rt = cType >= 0 ? r[cType] : (idx === cExp ? "despesa" : (rawDesc || rawCat));
         const tp = classifyType(rt, amt);
+        const cat = rawCat || inferCategoryFromText(rawDesc, tp);
         out.push({
-          date: dStr, type: tp, category: cat,
-          description: desc || `${tp === "receita" ? "Receita" : "Despesa"} — ${cat}`,
-          amount: Math.abs(amt), target_amount: tp === "receita" ? tgt : 0,
-          status, source: sourceLabel, source_file_id: sourceFileId, is_demo: false
+          checked: true,
+          date: dStr,
+          type: tp,
+          category: cat,
+          description: rawDesc || `${tp === "receita" ? "Receita" : "Despesa"} — ${cat}`,
+          amount: Math.abs(amt),
+          target_amount: tp === "receita" ? tgt : 0,
+          status
         });
       }
     }
     return out;
   }
 
-  // CSV Parser
+  // Parse CSV text
   function parseCsvText(text) {
     const sample = text.slice(0, 4096);
     let delim = (sample.match(/;/g)||[]).length >= (sample.match(/,/g)||[]).length ? ";" : ",";
@@ -301,110 +477,27 @@
     return rows;
   }
 
-  // XLSX Native ZIP + XML Parser
-  async function inflateRaw(u8) {
-    const ds = new DecompressionStream("deflate-raw");
-    const writer = ds.writable.getWriter();
-    writer.write(u8);
-    writer.close();
-    const buf = await new Response(ds.readable).arrayBuffer();
-    return new Uint8Array(buf);
+  // SheetJS Workbook Reader (supports .xlsx, .xls, .xlsm, .ods, .csv)
+  async function readSpreadsheetWithSheetJS(file) {
+    const ab = await file.arrayBuffer();
+    if (!window.XLSX) throw new Error("Biblioteca SheetJS não carregada.");
+    const wb = window.XLSX.read(ab, { type: "array", cellDates: true, raw: false });
+    const sheets = [];
+    let rawPreview = "";
+    for (const sheetName of wb.SheetNames) {
+      const ws = wb.Sheets[sheetName];
+      const matrix = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+      const csvStr = window.XLSX.utils.sheet_to_csv(ws, { FS: ";", blankrows: false });
+      sheets.push({ name: sheetName, matrix, csvStr });
+      rawPreview += `=== ABA: ${sheetName} ===\n${csvStr.slice(0, 12000)}\n\n`;
+    }
+    return { sheets, rawPreview: rawPreview.trim() };
   }
 
-  async function unzipEntries(arrayBuffer) {
-    const dv = new DataView(arrayBuffer);
-    const u8 = new Uint8Array(arrayBuffer);
-    let eocd = -1;
-    for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65558); i--) {
-      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
-    }
-    if (eocd < 0) throw new Error("Arquivo .xlsx inválido.");
-    const cdCount = dv.getUint16(eocd + 10, true);
-    let offset = dv.getUint32(eocd + 16, true);
-    const dec = new TextDecoder("utf-8");
-    const map = {};
-    for (let i = 0; i < cdCount; i++) {
-      if (dv.getUint32(offset, true) !== 0x02014b50) break;
-      const compMethod = dv.getUint16(offset + 10, true);
-      const compSize = dv.getUint32(offset + 20, true);
-      const nameLen = dv.getUint16(offset + 28, true);
-      const extraLen = dv.getUint16(offset + 30, true);
-      const commentLen = dv.getUint16(offset + 32, true);
-      const lfhOffset = dv.getUint32(offset + 42, true);
-      const name = dec.decode(u8.subarray(offset + 46, offset + 46 + nameLen));
-      offset += 46 + nameLen + extraLen + commentLen;
-
-      if (!name.endsWith(".xml")) continue;
-      const lNameLen = dv.getUint16(lfhOffset + 26, true);
-      const lExtraLen = dv.getUint16(lfhOffset + 28, true);
-      const dataStart = lfhOffset + 30 + lNameLen + lExtraLen;
-      const rawSlice = u8.subarray(dataStart, dataStart + compSize);
-      let contentBytes;
-      if (compMethod === 0) contentBytes = rawSlice;
-      else if (compMethod === 8) contentBytes = await inflateRaw(rawSlice);
-      else continue;
-      map[name] = dec.decode(contentBytes);
-    }
-    return map;
-  }
-
-  function colLettersToIdx(letters) {
-    let n = 0;
-    for (let i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
-    return n - 1;
-  }
-
-  async function parseXlsxFile(file, defYear, sourceLabel, sourceFileId) {
-    const buf = await file.arrayBuffer();
-    const xmlMap = await unzipEntries(buf);
-    const dp = new DOMParser();
-
-    const sharedStrings = [];
-    if (xmlMap["xl/sharedStrings.xml"]) {
-      const ssDoc = dp.parseFromString(xmlMap["xl/sharedStrings.xml"], "application/xml");
-      ssDoc.querySelectorAll("si").forEach(si => {
-        sharedStrings.push(Array.from(si.querySelectorAll("t")).map(t => t.textContent || "").join(""));
-      });
-    }
-
-    const sheetKeys = Object.keys(xmlMap).filter(k => /^xl\/worksheets\/sheet\d+\.xml$/i.test(k)).sort();
-    const all = [];
-    for (const sk of sheetKeys) {
-      const doc = dp.parseFromString(xmlMap[sk], "application/xml");
-      const matrix = [];
-      doc.querySelectorAll("sheetData > row").forEach(rowEl => {
-        const rowArr = [];
-        rowEl.querySelectorAll("c").forEach(cEl => {
-          const ref = cEl.getAttribute("r") || "";
-          const m = ref.match(/^([A-Z]+)/);
-          const ci = m ? colLettersToIdx(m[1]) : rowArr.length;
-          const t = cEl.getAttribute("t") || "";
-          let val = null;
-          if (t === "s") {
-            const vEl = cEl.querySelector("v");
-            val = vEl ? sharedStrings[Number(vEl.textContent)] ?? "" : "";
-          } else if (t === "inlineStr") {
-            val = Array.from(cEl.querySelectorAll("t")).map(x => x.textContent || "").join("");
-          } else {
-            const vEl = cEl.querySelector("v");
-            if (vEl) {
-              const raw = vEl.textContent || "";
-              val = (t === "str" || t === "b") ? raw : (isNaN(Number(raw)) ? raw : Number(raw));
-            }
-          }
-          rowArr[ci] = val;
-        });
-        matrix.push(rowArr);
-      });
-      all.push(...parseTabularMatrix(matrix, file.name, sourceLabel, sourceFileId, defYear));
-    }
-    return all;
-  }
-
-  // PDF Financial Data Extractor (using bundled Mozilla PDF.js)
-  async function extractLinesFromPdf(arrayBuffer) {
+  // PDF.js Spatial Text Extractor + Optional Scanned Page Renderer
+  async function readPdfDocument(arrayBuffer) {
     if (!window.pdfjsLib) throw new Error("Biblioteca PDF.js não carregada.");
-    const doc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const doc = await window.pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
     const allLines = [];
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p);
@@ -422,13 +515,10 @@
       rows.sort((a, b) => b.y - a.y);
       for (const r of rows) {
         r.cells.sort((a, b) => a.x - b.x);
-        // Join cells preserving multi-space gaps as column delimiters
-        let line = "";
+        let line = "", curCol = "", prevX = null;
         const cols = [];
-        let curCol = "";
-        let prevX = null;
         for (const c of r.cells) {
-          if (prevX !== null && (c.x - prevX) > 22) {
+          if (prevX !== null && (c.x - prevX) > 20) {
             if (curCol.trim()) cols.push(curCol.trim());
             curCol = c.str;
             line += "  |  " + c.str;
@@ -442,96 +532,146 @@
         allLines.push({ page: p, text: line.trim(), cols });
       }
     }
-    return allLines;
+    const rawText = allLines.map(l => l.text).join("\n");
+    return { doc, numPages: doc.numPages, lines: allLines, rawText };
   }
 
-  function parsePdfFinancialLines(lines, filename, defYear) {
-    const fullText = lines.map(l => l.text).join("\n");
-    const yearMatch = (filename || "").match(/(202\d)/) || fullText.match(/\b(202[4-6])\b/);
-    const fallbackYear = defYear || (yearMatch ? Number(yearMatch[1]) : new Date().getFullYear());
+  async function renderPdfPagesToImages(pdfDoc, maxPages = 6) {
+    const images = [];
+    const count = Math.min(maxPages, pdfDoc.numPages);
+    for (let p = 1; p <= count; p++) {
+      const page = await pdfDoc.getPage(p);
+      const vp = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement("canvas");
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+      images.push(canvas.toDataURL("image/jpeg", 0.82));
+    }
+    return images;
+  }
 
-    // Match Brazilian monetary values: R$ 1.234,56 | -R$ 450,00 | (1.200,50) | 12.345,67 | 450,00
-    const moneyRe = /(?:\(\s*)?(?:[-−+]\s*)?(?:R\$\s*)?(?:\d{1,3}(?:\.\d{3})+,\d{2}|\d+,\d{2})(?:\s*\))?/g;
+  // Upgraded Local Intelligent PDF Financial Extractor (handles BOTH dated lines AND DRE/Balancete/Monthly Reports!)
+  function parsePdfLinesLocally(lines, filename, defYear) {
+    const fullText = lines.map(l => l.text).join("\n");
+    const yearMatch = (filename || "").match(/(202\d)/) || fullText.match(/\b(202[0-9])\b/);
+    let currentYear = defYear || (yearMatch ? Number(yearMatch[1]) : new Date().getFullYear());
+    let currentMonth = null;
+
+    // Look for document-level month in header (first 20 lines)
+    const monthNameRe = /\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro|jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)\s*(?:de\s*|[/-]\s*)?(202\d)?\b/i;
+    for (const l of lines.slice(0, 20)) {
+      const mm = l.text.match(monthNameRe);
+      if (mm) {
+        const mk = normText(mm[1]);
+        if (MONTH_MAP[mk]) {
+          currentMonth = MONTH_MAP[mk];
+          if (mm[2] && !defYear) currentYear = Number(mm[2]);
+          break;
+        }
+      }
+      const dm = l.text.match(/\b(\d{1,2})[/-](202\d)\b/);
+      if (dm && Number(dm[1]) >= 1 && Number(dm[1]) <= 12) {
+        currentMonth = Number(dm[1]);
+        if (!defYear) currentYear = Number(dm[2]);
+        break;
+      }
+    }
+
+    // Match Brazilian OR US decimal currency values (with optional R$, -, (), D/C)
+    const moneyRe = /(?:\(\s*)?(?:[-−+]\s*)?(?:R\$\s*)?(?:\d{1,3}(?:\.\d{3})+,\d{2}|\d+,\d{2}|\d{1,3}(?:,\d{3})+\.\d{2})(?:\s*[DC])?(?:\s*\))?/g;
     const dateFullRe = /\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b/;
-    const monthYearRe = /\b(jan(?:eiro)?|fev(?:ereiro)?|mar(?:[cç]o)?|abr(?:il)?|mai(?:o)?|jun(?:ho)?|jul(?:ho)?|ago(?:sto)?|set(?:embro)?|out(?:ubro)?|nov(?:embro)?|dez(?:embro)?)\s*[/-]?\s*(202\d)?\b/i;
 
     const extracted = [];
     let currentSectionType = null;
-    let inSummarySkip = false;
+    let skipSummaryBlock = false;
 
     for (const lineObj of lines) {
       const raw = lineObj.text;
+      const plain = raw.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
       const norm = normText(raw);
-      if (!raw || raw.length < 6) continue;
+      if (!raw || raw.length < 4) continue;
 
-      // Ignore headers, footers, page numbers, KPI summary totals
-      if (/^(pagina|page|gerado_em|periodo|total_geral|subtotal|resumo_executivo)/.test(norm)) continue;
-      if (/\b(total\s+geral|subtotal|arrecadacao\s+total|despesas\s+totais|saldo\s+liquido|meta\s+de\s+arrecadacao|comparativo\s+consolidado)\b/i.test(raw.normalize("NFKD").replace(/[\u0300-\u036f]/g,""))) {
-        inSummarySkip = true;
+      // Update section context from headings
+      if (/^(pagina|page|gerado_em|impresso_em|cnpj|cpf)\b/.test(norm)) continue;
+      if (/\b(resumo\s+executivo|comparativo\s+consolidado|arrecadacao\s+total|despesas\s+totais|saldo\s+liquido|meta\s+de\s+arrecadacao|diagnostico|plano\s+de\s+acao)\b/i.test(plain)) {
+        skipSummaryBlock = true;
         continue;
       }
-      if (/lancamentos\s+financeiros|extrato|movimentac|data.*tipo.*categoria|data.*descricao.*valor/i.test(raw.normalize("NFKD").replace(/[\u0300-\u036f]/g,""))) {
-        inSummarySkip = false;
+      if (/\b(lancamentos\s+financeiros|extrato|movimentac|detalhamento|receitas\s+operacionais|despesas\s+operacionais|demonstracao\s+do\s+resultado|balancete|arrecadacao\s+por)\b/i.test(plain)) {
+        skipSummaryBlock = false;
+      }
+      if (/^\s*(receitas?|arrecadac[aã]o|entradas?)\b/i.test(plain) && !(raw.match(moneyRe) || []).length) {
+        currentSectionType = "receita";
         continue;
       }
-      if (/^receitas?\b/i.test(raw) && !raw.match(moneyRe)) { currentSectionType = "receita"; continue; }
-      if (/^despesas?\b/i.test(raw) && !raw.match(moneyRe)) { currentSectionType = "despesa"; continue; }
+      if (/^\s*(despesas?|custos?|gastos?|sa[ií]das?)\b/i.test(plain) && !(raw.match(moneyRe) || []).length) {
+        currentSectionType = "despesa";
+        continue;
+      }
+
+      // Skip total/subtotal lines so we never double-count
+      if (/^\s*(total|total\s+geral|subtotal|soma|saldo\s+final|saldo\s+anterior|resultado\s+l[ií]quido|lucro|preju[ií]zo)\b/i.test(plain)) {
+        continue;
+      }
 
       const moneyMatches = raw.match(moneyRe) || [];
-      if (!moneyMatches.length) continue;
+      if (!moneyMatches.length) {
+        // Check if this non-monetary heading sets a new month/year context
+        const hm = raw.match(monthNameRe);
+        if (hm && MONTH_MAP[normText(hm[1])]) {
+          currentMonth = MONTH_MAP[normText(hm[1])];
+          if (hm[2] && !defYear) currentYear = Number(hm[2]);
+        }
+        continue;
+      }
 
-      // Extract date from row
+      if (skipSummaryBlock && !dateFullRe.test(raw)) continue;
+
+      // Determine row date (per-line date > per-line month > inherited document/section date!)
       let dateStr = null;
       const dm = raw.match(dateFullRe);
       if (dm) {
-        dateStr = parseDateVal(dm[1], fallbackYear, null);
-      } else if (!inSummarySkip) {
-        const mm = raw.match(monthYearRe);
-        if (mm) {
-          const moKey = normText(mm[1]);
-          const mo = MONTH_MAP[moKey];
-          const yr = mm[2] ? Number(mm[2]) : fallbackYear;
-          if (mo) dateStr = `${yr}-${String(mo).padStart(2,"0")}-15`;
+        dateStr = parseDateVal(dm[1], currentYear, currentMonth);
+      } else {
+        const mm = raw.match(monthNameRe);
+        if (mm && MONTH_MAP[normText(mm[1])]) {
+          const mo = MONTH_MAP[normText(mm[1])];
+          const yr = mm[2] ? Number(mm[2]) : currentYear;
+          dateStr = `${yr}-${String(mo).padStart(2,"0")}-15`;
+        } else {
+          // Inherit document/section date for DRE / Balancete / Summary PDFs without per-line dates!
+          dateStr = `${currentYear}-${String(currentMonth || 1).padStart(2,"0")}-15`;
         }
       }
-      if (!dateStr) continue;
 
-      // Parse monetary values
       const parsedVals = moneyMatches.map(parseNum).filter(v => v !== null && Math.abs(v) > 0);
       if (!parsedVals.length) continue;
 
       const primaryAmt = parsedVals[0];
       const secondaryAmt = parsedVals.length >= 2 ? Math.abs(parsedVals[1]) : 0;
 
-      // Clean text to isolate type, category, description
       const cleanCols = lineObj.cols
-        .map(c => c.replace(dateFullRe, "").replace(moneyRe, "").replace(/^[-–—|]+|[-–—|]+$/g, "").trim())
-        .filter(Boolean);
+        .map(c => c.replace(dateFullRe, "").replace(moneyRe, "").replace(/^[-–—|:]+|[-–—|:]+$/g, "").trim())
+        .filter(c => c && !/^\d{1,3}(?:,\d+)?%$/.test(c));
+
+      if (!cleanCols.length && !dm) continue; // Skip stray pure-number lines
 
       let recType = currentSectionType || classifyType(raw, primaryAmt);
-      let category = "Importado via PDF";
-      let description = "";
-
-      // If structured columns exist (e.g. [Tipo, Categoria, Descrição])
-      const filteredCols = cleanCols.filter(c => !/^(receita|despesa|realizado|previsto|pendente)$/i.test(c));
       if (cleanCols.some(c => /^despesa$/i.test(c))) recType = "despesa";
       else if (cleanCols.some(c => /^receita$/i.test(c))) recType = "receita";
 
+      const filteredCols = cleanCols.filter(c => !/^(receita|despesa|realizado|previsto|pendente|r\$)$/i.test(c));
+      let category = "", description = "";
       if (filteredCols.length >= 2) {
         category = filteredCols[0].slice(0, 48);
-        description = filteredCols.slice(1).join(" — ").slice(0, 120);
+        description = filteredCols.slice(1).join(" — ").slice(0, 130);
       } else if (filteredCols.length === 1) {
-        description = filteredCols[0].slice(0, 120);
-        // Infer clean category from keywords
-        const nDesc = normText(description);
-        if (/tributo|imposto|iptu|iss|icms/.test(nDesc)) category = "Tributos";
-        else if (/servico|taxa/.test(nDesc)) category = "Serviços e Taxas";
-        else if (/convenio|repasse/.test(nDesc)) category = "Convênios e Repasses";
-        else if (/folha|salario|encargo/.test(nDesc)) category = "Folha e Encargos";
-        else if (/custo|operacional|aluguel|energia|manutencao/.test(nDesc)) category = "Custos Operacionais";
-        else category = recType === "receita" ? "Arrecadação (PDF)" : "Despesas (PDF)";
+        description = filteredCols[0].slice(0, 130);
+        category = inferCategoryFromText(description, recType);
       } else {
-        description = `${recType === "receita" ? "Receita" : "Despesa"} extraída de ${filename}`;
+        description = `${recType === "receita" ? "Receita" : "Despesa"} (${filename})`;
+        category = recType === "receita" ? "Arrecadação (PDF)" : "Despesas (PDF)";
       }
 
       extracted.push({
@@ -546,33 +686,371 @@
       });
     }
 
-    return { extracted, rawText: fullText };
+    return extracted;
   }
 
-  function openPdfReviewModal(filename, fid, extracted, rawText) {
-    ui.pdfPending = { filename, fid, rows: extracted };
-    $("pdf-prev-title").textContent = `Revisar Dados Extraídos do PDF — ${filename}`;
-    $("pdf-prev-sub").textContent = extracted.length
-      ? `${extracted.length} lançamento(s) identificado(s) automaticamente. Ajuste qualquer campo se necessário e confirme.`
-      : "Nenhuma linha com data + valor R$ foi detectada automaticamente (o PDF pode ser imagem escaneada). Confira o texto bruto abaixo.";
-    $("pdf-raw-text").textContent = rawText || "(Nenhum texto selecionável encontrado no PDF.)";
-    renderPdfPreviewRows();
+  // Real Generative AI Extraction (Gemini Native Multimodal PDF/Text + OpenAI GPT/Vision)
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function buildAiExtractionPrompt(filename, defYear) {
+    return `Você é um auditor financeiro especialista em relatórios financeiros brasileiros (DRE, Balancetes, Relatórios de Arrecadação, Fluxos de Caixa, Extratos e Planilhas Orçamentárias).
+Analise fielmente o documento "${filename}" e extraia TODOS os lançamentos financeiros individuais (receitas/arrecadações e despesas/custos).
+
+REGRAS ESTRITAS DE FIDELIDADE:
+1. Extraia SOMENTE valores reais presentes no documento. NUNCA invente ou estime valores.
+2. NÃO inclua linhas de "Total", "Total Geral", "Subtotal" ou "Saldo Final" como lançamentos para evitar duplicidade de soma.
+3. Formato da data: "YYYY-MM-DD". Se o documento informar apenas mês/ano (ex: "Março/2025"), use o dia 15 (ex: "2025-03-15"). Se informar apenas o ano ou não houver data por linha, use o ano identificado no documento${defYear ? ` (ano padrão informado pelo usuário: ${defYear})` : ""}.
+4. "type": deve ser estritamente "receita" (arrecadação, tributos, entradas, vendas, convênios, repasses, taxas) ou "despesa" (custos, folha, gastos, pagamentos, saídas, débitos).
+5. "amount": número decimal positivo (ex: 145000.50).
+6. "target_amount": se houver coluna de Meta / Previsto / Orçado para a receita, coloque o número positivo; caso contrário, 0.
+7. "category": nome claro da rubrica/categoria financeira em português.
+8. "description": descrição concisa e fiel da linha.
+
+Retorne EXCLUSIVAMENTE um objeto JSON válido com a estrutura:
+{
+  "resumo_ia": "Resumo curto em 1-2 frases explicando o período, tipo de documento lido e totais conferidos.",
+  "records": [
+    {
+      "date": "2025-01-15",
+      "type": "receita",
+      "category": "Nome da Categoria",
+      "description": "Descrição fiel",
+      "amount": 12345.67,
+      "target_amount": 0,
+      "status": "Realizado"
+    }
+  ]
+}`;
+  }
+
+  function parseAiJsonResponse(rawText) {
+    const cleaned = String(rawText || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      const m = cleaned.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error("A IA não retornou um JSON válido.");
+      parsed = JSON.parse(m[0]);
+    }
+    const rawRecs = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.records) ? parsed.records : []);
+    const records = [];
+    for (const r of rawRecs) {
+      const amt = Math.abs(parseNum(r.amount) || 0);
+      if (!amt) continue;
+      const d = parseDateVal(r.date, new Date().getFullYear(), 1) || `${new Date().getFullYear()}-01-15`;
+      const tp = String(r.type || "").toLowerCase().includes("desp") ? "despesa" : "receita";
+      records.push({
+        checked: true,
+        date: d,
+        type: tp,
+        category: String(r.category || inferCategoryFromText(r.description, tp)).trim(),
+        description: String(r.description || r.category || "Lançamento extraído por IA").trim(),
+        amount: amt,
+        target_amount: tp === "receita" ? Math.abs(parseNum(r.target_amount) || 0) : 0,
+        status: String(r.status || "Realizado").trim()
+      });
+    }
+    return {
+      summary: String(parsed.resumo_ia || `IA extraiu ${records.length} lançamento(s) do documento.`),
+      records
+    };
+  }
+
+  async function callGeminiExtraction({ file, textContent, pdfArrayBuffer, defYear }) {
+    const model = aiCfg.model || "gemini-2.5-flash";
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(aiCfg.apiKey.trim())}`;
+    const parts = [{ text: buildAiExtractionPrompt(file.name, defYear) }];
+
+    if (pdfArrayBuffer && pdfArrayBuffer.byteLength <= 18 * 1024 * 1024) {
+      // Send native PDF directly to Gemini (handles BOTH text AND scanned/image PDFs!)
+      parts.push({
+        inline_data: {
+          mime_type: "application/pdf",
+          data: arrayBufferToBase64(pdfArrayBuffer)
+        }
+      });
+    } else if (textContent) {
+      parts.push({ text: `CONTEÚDO DO ARQUIVO:\n${textContent.slice(0, 140000)}` });
+    }
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json"
+        }
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || `Gemini HTTP ${res.status}`);
+    }
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    return parseAiJsonResponse(text);
+  }
+
+  async function callOpenAiExtraction({ file, textContent, pageImages, defYear }) {
+    const model = aiCfg.model || "gpt-4o-mini";
+    const userContent = [{ type: "text", text: buildAiExtractionPrompt(file.name, defYear) }];
+    if (pageImages && pageImages.length) {
+      for (const img of pageImages) {
+        userContent.push({ type: "image_url", image_url: { url: img } });
+      }
+    } else if (textContent) {
+      userContent.push({ type: "text", text: `CONTEÚDO DO ARQUIVO:\n${textContent.slice(0, 110000)}` });
+    }
+
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${aiCfg.apiKey.trim()}`
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "Você extrai dados financeiros com 100% de fidelidade em JSON estruturado." },
+          { role: "user", content: userContent }
+        ]
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || `OpenAI HTTP ${res.status}`);
+    }
+    const text = data.choices?.[0]?.message?.content || "";
+    return parseAiJsonResponse(text);
+  }
+
+  async function testAiConnection() {
+    const prov = $("ai-provider").value;
+    const key = $("ai-key").value.trim();
+    const model = $("ai-model").value;
+    if (prov === "local") {
+      toast("IA Local Inteligente (Offline) pronta para uso!");
+      return;
+    }
+    if (!key) {
+      toast("Cole sua chave de API antes de testar a conexão.", true);
+      return;
+    }
+    toast("Testando conexão com a IA...");
+    try {
+      if (prov === "gemini") {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contents: [{ parts: [{ text: "Responda apenas OK" }] }] })
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error?.message || `HTTP ${r.status}`);
+      } else {
+        const r = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+          body: JSON.stringify({ model, max_tokens: 5, messages: [{ role: "user", content: "Responda OK" }] })
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error?.message || `HTTP ${r.status}`);
+      }
+      aiCfg.provider = prov; aiCfg.model = model; aiCfg.apiKey = key;
+      saveAiCfg();
+      renderAiStatus();
+      toast(`Conexão com ${prov === "gemini" ? "Google Gemini" : "OpenAI"} (${model}) validada com sucesso!`);
+    } catch (err) {
+      toast(`Falha na conexão IA: ${err.message}`, true);
+    }
+  }
+
+  function renderAiStatus() {
+    const hasCloudAi = aiCfg.provider !== "local" && Boolean(aiCfg.apiKey.trim());
+    const pill = $("ai-status-pill");
+    const sb = $("sb-ai-mode");
+    if (hasCloudAi) {
+      const lbl = `${aiCfg.provider === "gemini" ? "Gemini" : "OpenAI"} • ${aiCfg.model}`;
+      pill.textContent = `IA Ativa: ${lbl}`;
+      pill.className = "ai-status-pill";
+      sb.textContent = `Motor: IA (${lbl})`;
+    } else {
+      pill.textContent = "IA Local Inteligente (Offline)";
+      pill.className = "ai-status-pill local";
+      sb.textContent = "Motor: IA Local Inteligente";
+    }
+  }
+
+  function syncProviderModelDropdown() {
+    const prov = $("ai-provider").value;
+    const models = PROVIDER_MODELS[prov] || PROVIDER_MODELS.local;
+    const sel = $("ai-model");
+    sel.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join("");
+    if (models.some(m => m.id === aiCfg.model)) sel.value = aiCfg.model;
+    $("ai-key-wrap").style.opacity = prov === "local" ? "0.45" : "1";
+    $("ai-key").disabled = prov === "local";
+  }
+
+  // Unified File Upload & AI Extraction Pipeline
+  async function handleFilesUpload(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    const defYearVal = $("up-year").value ? Number($("up-year").value) : null;
+    const alwaysReview = $("opt-always-review").checked;
+    const useCloudAi = aiCfg.provider !== "local" && Boolean(aiCfg.apiKey.trim());
+
+    for (const f of files) {
+      const ext = (f.name.split(".").pop() || "").toLowerCase();
+      const fid = `upload:${ext}:${f.name}:${f.size}`;
+      try {
+        let extracted = [];
+        let rawText = "";
+        let aiSummary = "";
+        let engineUsed = useCloudAi ? (aiCfg.provider === "gemini" ? "IA Gemini" : "IA OpenAI") : "IA Local";
+
+        if (ext === "pdf") {
+          setProgress(true, `Lendo páginas do PDF "${f.name}"...`);
+          const ab = await f.arrayBuffer();
+          const pdfInfo = await readPdfDocument(ab);
+          rawText = pdfInfo.rawText;
+
+          if (useCloudAi) {
+            setProgress(true, `Extraindo dados financeiros de "${f.name}" com ${engineUsed}...`);
+            try {
+              if (aiCfg.provider === "gemini") {
+                const res = await callGeminiExtraction({ file: f, textContent: rawText, pdfArrayBuffer: ab, defYear: defYearVal });
+                extracted = res.records; aiSummary = res.summary;
+              } else {
+                const isScanned = rawText.trim().length < 50;
+                const imgs = isScanned ? await renderPdfPagesToImages(pdfInfo.doc, 6) : null;
+                const res = await callOpenAiExtraction({ file: f, textContent: rawText, pageImages: imgs, defYear: defYearVal });
+                extracted = res.records; aiSummary = res.summary;
+              }
+            } catch (aiErr) {
+              toast(`Aviso ${engineUsed}: ${aiErr.message}. Usando IA Local como contingência.`, true);
+              engineUsed = "IA Local (Contingência)";
+              extracted = parsePdfLinesLocally(pdfInfo.lines, f.name, defYearVal);
+            }
+          } else {
+            extracted = parsePdfLinesLocally(pdfInfo.lines, f.name, defYearVal);
+            if (!rawText.trim()) {
+              aiSummary = "Este PDF parece ser uma imagem escaneada (sem texto selecionável). Configure uma chave gratuita do Google Gemini acima para que a IA leia PDFs escaneados via visão computacional!";
+            }
+          }
+
+          setProgress(false);
+          ui.reviewQueue.push({
+            filename: f.name, fid, ext: "pdf", engineUsed, aiSummary, rawText, rows: extracted
+          });
+        } else if (["xlsx","xls","xlsm","ods","csv","tsv","txt"].includes(ext)) {
+          setProgress(true, `Lendo planilha "${f.name}"...`);
+          let sheets = [];
+          if (["csv","tsv","txt"].includes(ext)) {
+            let txt = await f.text();
+            if (txt.includes("\uFFFD")) {
+              txt = new TextDecoder("windows-1252").decode(await f.arrayBuffer());
+            }
+            rawText = txt.slice(0, 30000);
+            sheets = [{ name: f.name, matrix: parseCsvText(txt), csvStr: txt }];
+          } else {
+            const parsedBook = await readSpreadsheetWithSheetJS(f);
+            sheets = parsedBook.sheets;
+            rawText = parsedBook.rawPreview;
+          }
+
+          if (useCloudAi) {
+            setProgress(true, `Analisando colunas e extraindo lançamentos de "${f.name}" com ${engineUsed}...`);
+            try {
+              const res = aiCfg.provider === "gemini"
+                ? await callGeminiExtraction({ file: f, textContent: rawText, pdfArrayBuffer: null, defYear: defYearVal })
+                : await callOpenAiExtraction({ file: f, textContent: rawText, pageImages: null, defYear: defYearVal });
+              extracted = res.records; aiSummary = res.summary;
+            } catch (aiErr) {
+              toast(`Aviso ${engineUsed}: ${aiErr.message}. Usando IA Local.`, true);
+              engineUsed = "IA Local (Contingência)";
+              for (const sh of sheets) {
+                extracted.push(...parseTabularMatrix(sh.matrix, `${f.name} ${sh.name}`, defYearVal));
+              }
+            }
+          } else {
+            for (const sh of sheets) {
+              extracted.push(...parseTabularMatrix(sh.matrix, `${f.name} ${sh.name}`, defYearVal));
+            }
+          }
+
+          setProgress(false);
+          if (alwaysReview || extracted.length === 0) {
+            ui.reviewQueue.push({
+              filename: f.name, fid, ext, engineUsed, aiSummary, rawText, rows: extracted
+            });
+          } else {
+            commitImportedRecords({ filename: f.name, fid, ext, engineUsed, rows: extracted });
+          }
+        } else {
+          toast(`Formato não suportado: "${f.name}". Use .xlsx, .xls, .csv ou .pdf.`, true);
+        }
+      } catch (err) {
+        setProgress(false);
+        toast(`Erro ao processar "${f.name}": ${err.message}`, true);
+      }
+    }
+
+    $("file-picker").value = "";
+    openNextReviewIfAny();
+  }
+
+  function openNextReviewIfAny() {
+    if (ui.currentReview || !ui.reviewQueue.length) return;
+    const job = ui.reviewQueue.shift();
+    ui.currentReview = job;
+
+    $("pdf-prev-title").textContent = `Revisar Dados Extraídos (${job.engineUsed}) — ${job.filename}`;
+    $("pdf-prev-sub").textContent = job.rows.length
+      ? `${job.rows.length} lançamento(s) identificado(s). Edite qualquer campo se desejar e confirme.`
+      : "Nenhum lançamento estruturado foi identificado automaticamente. Confira o conteúdo bruto abaixo ou adicione linhas manualmente.";
+
+    const note = $("ai-summary-note");
+    if (job.aiSummary) {
+      note.textContent = `Diagnóstico da IA: ${job.aiSummary}`;
+      note.classList.add("show");
+    } else {
+      note.classList.remove("show");
+    }
+
+    $("pdf-raw-text").textContent = job.rawText || "(Nenhum texto extraído.)";
+    renderReviewRows();
     $("m-pdf-preview").classList.add("open");
   }
 
-  function renderPdfPreviewRows() {
+  function renderReviewRows() {
     const tb = $("pdf-prev-tbody");
-    const rows = ui.pdfPending?.rows || [];
+    const rows = ui.currentReview?.rows || [];
+    const chosen = rows.filter(r => r.checked);
+    const sumRev = chosen.filter(r => r.type === "receita").reduce((s,r) => s + Number(r.amount || 0), 0);
+    const sumExp = chosen.filter(r => r.type === "despesa").reduce((s,r) => s + Number(r.amount || 0), 0);
+
+    $("pdf-prev-totals").textContent = `Selecionados — Receitas: ${fmtBRL(sumRev)} • Despesas: ${fmtBRL(sumExp)}`;
+    $("pdf-prev-count").textContent = `${chosen.length} de ${rows.length} selecionado(s)`;
+    $("m-pdf-confirm").disabled = chosen.length === 0;
+    $("pdf-cb-all").checked = rows.length > 0 && chosen.length === rows.length;
+
     if (!rows.length) {
-      tb.innerHTML = `<tr><td colspan="7" class="empty">Nenhum registro estruturado encontrado neste PDF. Verifique se o PDF possui texto selecionável (não escaneado como imagem).</td></tr>`;
-      $("pdf-prev-count").textContent = "0 selecionado(s)";
-      $("m-pdf-confirm").disabled = true;
+      tb.innerHTML = `<tr><td colspan="7" class="empty">Nenhum lançamento extraído. Dica: configure uma chave Gemini gratuita no painel acima para ler PDFs complexos ou escaneados com IA, ou clique em "+ Adicionar Linha Manual".</td></tr>`;
       return;
     }
-
-    const selCount = rows.filter(r => r.checked).length;
-    $("pdf-prev-count").textContent = `${selCount} de ${rows.length} selecionado(s)`;
-    $("m-pdf-confirm").disabled = selCount === 0;
 
     tb.innerHTML = rows.map((r, i) => `
       <tr>
@@ -591,40 +1069,42 @@
       </tr>
     `).join("");
 
-    tb.querySelectorAll(".p-chk").forEach(el => el.onchange = e => {
-      rows[Number(e.target.dataset.i)].checked = e.target.checked;
-      const sc = rows.filter(r => r.checked).length;
-      $("pdf-prev-count").textContent = `${sc} de ${rows.length} selecionado(s)`;
-      $("m-pdf-confirm").disabled = sc === 0;
-    });
+    const updateTotalsOnly = () => {
+      const ch = rows.filter(r => r.checked);
+      const sr = ch.filter(r => r.type === "receita").reduce((s,r) => s + Number(r.amount || 0), 0);
+      const se = ch.filter(r => r.type === "despesa").reduce((s,r) => s + Number(r.amount || 0), 0);
+      $("pdf-prev-totals").textContent = `Selecionados — Receitas: ${fmtBRL(sr)} • Despesas: ${fmtBRL(se)}`;
+      $("pdf-prev-count").textContent = `${ch.length} de ${rows.length} selecionado(s)`;
+      $("m-pdf-confirm").disabled = ch.length === 0;
+    };
+
+    tb.querySelectorAll(".p-chk").forEach(el => el.onchange = e => { rows[Number(e.target.dataset.i)].checked = e.target.checked; updateTotalsOnly(); });
     tb.querySelectorAll(".p-date").forEach(el => el.onchange = e => { rows[Number(e.target.dataset.i)].date = e.target.value; });
-    tb.querySelectorAll(".p-type").forEach(el => el.onchange = e => { rows[Number(e.target.dataset.i)].type = e.target.value; });
+    tb.querySelectorAll(".p-type").forEach(el => el.onchange = e => { rows[Number(e.target.dataset.i)].type = e.target.value; updateTotalsOnly(); });
     tb.querySelectorAll(".p-cat").forEach(el => el.oninput = e => { rows[Number(e.target.dataset.i)].category = e.target.value; });
     tb.querySelectorAll(".p-desc").forEach(el => el.oninput = e => { rows[Number(e.target.dataset.i)].description = e.target.value; });
-    tb.querySelectorAll(".p-amt").forEach(el => el.oninput = e => { rows[Number(e.target.dataset.i)].amount = parseFloat(e.target.value || "0") || 0; });
+    tb.querySelectorAll(".p-amt").forEach(el => el.oninput = e => { rows[Number(e.target.dataset.i)].amount = parseFloat(e.target.value || "0") || 0; updateTotalsOnly(); });
     tb.querySelectorAll(".p-tgt").forEach(el => el.oninput = e => { rows[Number(e.target.dataset.i)].target_amount = parseFloat(e.target.value || "0") || 0; });
   }
 
-  function confirmPdfImport() {
-    if (!ui.pdfPending) return;
-    const { filename, fid, rows } = ui.pdfPending;
-    const chosen = rows.filter(r => r.checked && r.date && r.amount > 0);
-    if (!chosen.length) { toast("Nenhum registro válido selecionado.", true); return; }
+  function commitImportedRecords({ filename, fid, ext, engineUsed, rows }) {
+    const valid = rows.filter(r => r.checked !== false && r.date && Number(r.amount) > 0);
+    if (!valid.length) { toast("Nenhum registro válido selecionado.", true); return; }
 
     store.records = store.records.filter(r => r.source_file_id !== fid);
-    for (const r of chosen) {
+    for (const r of valid) {
       store.records.push({
         id: store.nextId++,
         date: r.date,
         year: Number(r.date.slice(0,4)),
         month: Number(r.date.slice(5,7)),
-        type: r.type,
-        category: r.category.trim() || "Importado via PDF",
-        description: r.description.trim() || `Lançamento (${filename})`,
-        amount: Number(r.amount),
-        target_amount: r.type === "receita" ? Number(r.target_amount || 0) : 0,
-        status: "Realizado",
-        source: `PDF: ${filename}`,
+        type: r.type === "despesa" ? "despesa" : "receita",
+        category: String(r.category || "Geral").trim(),
+        description: String(r.description || filename).trim(),
+        amount: Math.abs(Number(r.amount)),
+        target_amount: r.type === "receita" ? Math.abs(Number(r.target_amount || 0)) : 0,
+        status: r.status || "Realizado",
+        source: `${ext.toUpperCase()} (${engineUsed}): ${filename}`,
         source_file_id: fid,
         is_demo: false
       });
@@ -633,87 +1113,17 @@
     store.files.unshift({
       file_id: fid,
       file_name: filename,
-      source_type: "pdf",
-      row_count: chosen.length,
+      source_type: ext,
+      engine: engineUsed,
+      row_count: valid.length,
       synced_at: new Date().toISOString()
     });
     saveStore();
-    $("m-pdf-preview").classList.remove("open");
-    ui.pdfPending = null;
-    toast(`${chosen.length} lançamento(s) importado(s) do PDF "${filename}"!`);
+    toast(`${valid.length} lançamento(s) importado(s) de "${filename}" (${engineUsed})!`);
     refreshAll();
   }
 
-  // Unified Upload Handler (.xlsx, .csv, .pdf)
-  async function handleFilesUpload(fileList) {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-    const defYearVal = $("up-year").value ? Number($("up-year").value) : null;
-    let totalImported = 0;
-
-    for (const f of files) {
-      const ext = (f.name.split(".").pop() || "").toLowerCase();
-      const fid = `upload:${ext}:${f.name}:${f.size}`;
-      const label = `Upload: ${f.name}`;
-      try {
-        if (ext === "pdf") {
-          toast(`Lendo PDF "${f.name}"...`);
-          const ab = await f.arrayBuffer();
-          const lines = await extractLinesFromPdf(ab);
-          const { extracted, rawText } = parsePdfFinancialLines(lines, f.name, defYearVal);
-          openPdfReviewModal(f.name, fid, extracted, rawText);
-          continue;
-        }
-
-        let parsed = [];
-        if (ext === "xlsx" || ext === "xlsm") {
-          parsed = await parseXlsxFile(f, defYearVal, label, fid);
-        } else if (ext === "csv" || ext === "tsv" || ext === "txt") {
-          let txt = await f.text();
-          if (txt.includes("\uFFFD")) {
-            const ab = await f.arrayBuffer();
-            txt = new TextDecoder("windows-1252").decode(ab);
-          }
-          parsed = parseTabularMatrix(parseCsvText(txt), f.name, label, fid, defYearVal);
-        } else {
-          toast(`Formato não suportado: ${f.name}. Use .xlsx, .csv ou .pdf.`, true);
-          continue;
-        }
-
-        if (parsed.length) {
-          store.records = store.records.filter(r => r.source_file_id !== fid);
-          for (const item of parsed) {
-            item.id = store.nextId++;
-            item.year = Number(item.date.slice(0,4));
-            item.month = Number(item.date.slice(5,7));
-            store.records.push(item);
-          }
-          store.files = store.files.filter(x => x.file_id !== fid);
-          store.files.unshift({
-            file_id: fid,
-            file_name: f.name,
-            source_type: ext === "xlsx" || ext === "xlsm" ? "xlsx" : "csv",
-            row_count: parsed.length,
-            synced_at: new Date().toISOString()
-          });
-          totalImported += parsed.length;
-        } else {
-          toast(`Nenhum registro financeiro reconhecido em "${f.name}".`, true);
-        }
-      } catch (err) {
-        toast(`Erro ao processar "${f.name}": ${err.message}`, true);
-      }
-    }
-
-    if (totalImported > 0) {
-      saveStore();
-      toast(`${totalImported} lançamento(s) importado(s) com sucesso!`);
-      refreshAll();
-    }
-    $("file-picker").value = "";
-  }
-
-  // Google Sheets / Drive Live Sync (direct CSV endpoint fetch)
+  // Google Sheets / Drive Live Sync
   function toGoogleCsvUrl(rawUrl) {
     const u = rawUrl.trim();
     if (!u) return null;
@@ -739,7 +1149,7 @@
     for (const line of lines) {
       const target = toGoogleCsvUrl(line);
       if (!target) {
-        errors.push(`Link não é uma Planilha Google direta (dica: abra a planilha no Drive ou compartilhe com 'Qualquer pessoa com o link pode ver').`);
+        errors.push("Use o link direto de uma Planilha Google (docs.google.com/spreadsheets/d/...) com acesso 'Qualquer pessoa com o link pode ver'.");
         continue;
       }
       try {
@@ -750,21 +1160,32 @@
           throw new Error("Planilha privada — ative 'Qualquer pessoa com o link: Leitor' ou 'Publicar na Web (CSV)'.");
         }
         const fid = `drive:${target.id}`;
-        const label = `Google Drive (${target.id.slice(0,8)})`;
-        const parsed = parseTabularMatrix(parseCsvText(csvText), line, label, fid, null);
+        const parsed = parseTabularMatrix(parseCsvText(csvText), line, null);
         if (parsed.length) {
           store.records = store.records.filter(r => r.source_file_id !== fid);
           for (const item of parsed) {
-            item.id = store.nextId++;
-            item.year = Number(item.date.slice(0,4));
-            item.month = Number(item.date.slice(5,7));
-            store.records.push(item);
+            store.records.push({
+              id: store.nextId++,
+              date: item.date,
+              year: Number(item.date.slice(0,4)),
+              month: Number(item.date.slice(5,7)),
+              type: item.type,
+              category: item.category,
+              description: item.description,
+              amount: item.amount,
+              target_amount: item.target_amount,
+              status: item.status,
+              source: `Google Drive (${target.id.slice(0,8)})`,
+              source_file_id: fid,
+              is_demo: false
+            });
           }
           store.files = store.files.filter(f => f.file_id !== fid);
           store.files.unshift({
             file_id: fid,
             file_name: `Google Drive — ${target.id.slice(0,12)}`,
             source_type: "drive",
+            engine: "Google Sheets",
             row_count: parsed.length,
             synced_at: new Date().toISOString()
           });
@@ -927,7 +1348,7 @@
     if (!recs.length) {
       return {
         headline: "Aguardando dados financeiros reais para diagnóstico",
-        summary: "Importe arquivos .xlsx, .csv ou .pdf, insira lançamentos manuais ou teste com a Base de Demonstração para visualizar o plano quantificado de aumento de arrecadação.",
+        summary: "Importe arquivos .xlsx, .csv ou .pdf com IA, insira lançamentos manuais ou teste com a Base de Demonstração para visualizar o plano quantificado de aumento de arrecadação.",
         recs: []
       };
     }
@@ -1025,16 +1446,31 @@
     return { headline, summary, recs: list };
   }
 
-  // Canvas Charts
+  // Cross-browser safe Rounded Rect + Retina Canvas Charts
+  function drawRoundRect(ctx, x, y, w, h, r) {
+    if (w <= 0 || h <= 0) return;
+    const rad = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.lineTo(x + w - rad, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x, y + rad);
+    ctx.quadraticCurveTo(x, y, x + rad, y);
+    ctx.closePath();
+  }
+
   function setupCanvas(canvas) {
-    const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    const w = Math.max(300, rect.width || 600);
-    const h = Math.max(220, rect.height || 280);
+    if (rect.width < 20 || rect.height < 20) return null; // Panel hidden
+    const dpr = window.devicePixelRatio || 1;
+    const w = rect.width;
+    const h = rect.height;
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
     const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     return { ctx, w, h };
   }
 
@@ -1046,8 +1482,9 @@
   }
 
   function drawMonthlyChart(ms) {
-    const canvas = $("c-monthly");
-    const { ctx, w, h } = setupCanvas(canvas);
+    const s = setupCanvas($("c-monthly"));
+    if (!s) return;
+    const { ctx, w, h } = s;
     ctx.clearRect(0, 0, w, h);
     ui.chartHit.monthly = [];
 
@@ -1078,12 +1515,16 @@
       const rH = (m.rev / maxVal) * ch;
       const eH = (m.exp / maxVal) * ch;
 
-      ctx.fillStyle = "rgba(245, 171, 110, 0.88)";
-      ctx.beginPath(); ctx.roundRect(cx - bw - 1.5, pad.t + ch - rH, bw, rH, [4, 4, 0, 0]); ctx.fill();
-
-      ctx.fillStyle = "rgba(240, 123, 113, 0.36)"; ctx.strokeStyle = "#f07b71"; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.roundRect(cx + 1.5, pad.t + ch - eH, bw, eH, [4, 4, 0, 0]); ctx.fill();
-      if (eH > 1) ctx.stroke();
+      if (rH > 0.5) {
+        ctx.fillStyle = "rgba(245, 171, 110, 0.88)";
+        drawRoundRect(ctx, cx - bw - 1.5, pad.t + ch - rH, bw, rH, 4);
+        ctx.fill();
+      }
+      if (eH > 0.5) {
+        ctx.fillStyle = "rgba(240, 123, 113, 0.36)"; ctx.strokeStyle = "#f07b71"; ctx.lineWidth = 1;
+        drawRoundRect(ctx, cx + 1.5, pad.t + ch - eH, bw, eH, 4);
+        ctx.fill(); ctx.stroke();
+      }
 
       if (i % stepLbl === 0) {
         ctx.fillStyle = "#a89d97"; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
@@ -1111,8 +1552,9 @@
   }
 
   function drawAnnualChart(ac) {
-    const canvas = $("c-annual");
-    const { ctx, w, h } = setupCanvas(canvas);
+    const s = setupCanvas($("c-annual"));
+    if (!s) return;
+    const { ctx, w, h } = s;
     ctx.clearRect(0, 0, w, h);
     ui.chartHit.annual = [];
 
@@ -1139,9 +1581,12 @@
       ];
       bars.forEach(b => {
         const bh = (b.val / maxVal) * ch;
-        ctx.fillStyle = b.fill;
-        ctx.beginPath(); ctx.roundRect(cx + b.dx - bw/2, pad.t + ch - bh, bw, bh, [5, 5, 0, 0]); ctx.fill();
-        if (b.stroke && bh > 1) { ctx.strokeStyle = b.stroke; ctx.lineWidth = 1.4; ctx.stroke(); }
+        if (bh > 0.5) {
+          ctx.fillStyle = b.fill;
+          drawRoundRect(ctx, cx + b.dx - bw/2, pad.t + ch - bh, bw, bh, 5);
+          ctx.fill();
+          if (b.stroke) { ctx.strokeStyle = b.stroke; ctx.lineWidth = 1.4; ctx.stroke(); }
+        }
       });
       ctx.fillStyle = "#e6dcd6"; ctx.font = "600 12px sans-serif"; ctx.textAlign = "center";
       ctx.fillText(String(a.year), cx, h - 12);
@@ -1150,8 +1595,9 @@
   }
 
   function drawDeviationChart(ms) {
-    const canvas = $("c-dev");
-    const { ctx, w, h } = setupCanvas(canvas);
+    const s = setupCanvas($("c-dev"));
+    if (!s) return;
+    const { ctx, w, h } = s;
     ctx.clearRect(0, 0, w, h);
     ui.chartHit.dev = [];
 
@@ -1181,15 +1627,24 @@
     ms.forEach((m, i) => {
       const cx = pad.l + slot * i + slot / 2;
       const bh = (Math.abs(m.desvio) / maxAbs) * (ch / 2);
-      ctx.fillStyle = m.desvio < 0 ? "rgba(240, 123, 113, 0.85)" : "rgba(245, 171, 110, 0.88)";
-      const y = m.desvio >= 0 ? zeroY - bh : zeroY;
-      ctx.beginPath(); ctx.roundRect(cx - bw/2, y, bw, bh, m.desvio >= 0 ? [4,4,0,0] : [0,0,4,4]); ctx.fill();
+      if (bh > 0.5) {
+        ctx.fillStyle = m.desvio < 0 ? "rgba(240, 123, 113, 0.85)" : "rgba(245, 171, 110, 0.88)";
+        const y = m.desvio >= 0 ? zeroY - bh : zeroY;
+        ctx.fillRect(cx - bw/2, y, bw, bh);
+      }
       if (i % stepLbl === 0) {
         ctx.fillStyle = "#a89d97"; ctx.font = "11px sans-serif"; ctx.textAlign = "center";
         ctx.fillText(m.label, cx, h - 12);
       }
       ui.chartHit.dev.push({ x1: pad.l + slot * i, x2: pad.l + slot * (i + 1), item: m });
     });
+  }
+
+  function redrawAllVisibleCharts() {
+    if (!ui.lastAnalytics) return;
+    drawMonthlyChart(ui.lastAnalytics.monthly);
+    drawAnnualChart(ui.lastAnalytics.annual);
+    drawDeviationChart(ui.lastAnalytics.monthly);
   }
 
   function bindChartHover(canvasId, ttId, hitKey, htmlFn) {
@@ -1418,7 +1873,7 @@
     return new Blob([bytes], { type: "application/pdf" });
   }
 
-  // Optional Opt-In Demo Data
+  // Optional Demo Data
   function loadDemo() {
     clearDemo(true);
     const weights = [0.92,0.86,0.98,1.02,1.04,0.95,0.89,1.01,1.06,1.08,1.12,1.18];
@@ -1456,7 +1911,7 @@
         });
       }
     }
-    store.files.unshift({ file_id:"demo:2024_2026", file_name:"Base_Demonstracao_2024_2026 (Simulação)", source_type:"demo", row_count:added, synced_at:new Date().toISOString() });
+    store.files.unshift({ file_id:"demo:2024_2026", file_name:"Base_Demonstracao_2024_2026 (Simulação)", source_type:"demo", engine:"Simulação", row_count:added, synced_at:new Date().toISOString() });
     saveStore();
     toast(`Base de demonstração carregada (${added} lançamentos simulados).`);
     refreshAll();
@@ -1479,7 +1934,7 @@
     $("sb-dot").className = `dot ${store.records.length ? "" : "coral"}`;
     $("sb-status").textContent = store.records.length
       ? `${store.records.length} lançamentos ativos • ${store.files.length} fonte(s) carregada(s).`
-      : "Base limpa e fiel. Importe .xlsx, .csv, .pdf ou conecte o Google Drive.";
+      : "Base limpa e fiel. Importe .xlsx, .csv, .pdf com IA ou conecte o Google Drive.";
 
     const banner = $("top-banner");
     const hasDemo = store.records.some(r => r.is_demo);
@@ -1488,10 +1943,10 @@
       banner.className = "banner demo";
       banner.innerHTML = `
         <div><h3>Modo Demonstração Ativo (Simulação 2024–2026)</h3>
-        <p>Estes dados são simulados para teste de gráficos, simulador e PDF. Remova a demonstração com 1 clique ao importar seus relatórios reais (.xlsx, .csv ou .pdf).</p></div>
+        <p>Estes dados são simulados para teste de gráficos, simulador e PDF. Remova a demonstração com 1 clique ao importar seus relatórios reais com IA.</p></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" id="b-imp">Importar XLSX / CSV / PDF</button>
-          <button class="btn btn-coral btn-sm" id="b-clr">Remover Demonstração</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="b-imp">Importar com IA</button>
+          <button type="button" class="btn btn-coral btn-sm" id="b-clr">Remover Demonstração</button>
         </div>`;
       $("b-imp").onclick = () => switchView("import-drive");
       $("b-clr").onclick = () => clearDemo(false);
@@ -1500,10 +1955,10 @@
       banner.className = "banner";
       banner.innerHTML = `
         <div><h3>Base 100% Fiel — Aguardando seus Relatórios Financeiros (2024–2026)</h3>
-        <p>Importe arquivos .xlsx, .csv ou .pdf, conecte suas Planilhas do Google Drive, insira lançamentos manuais ou teste agora com a base de demonstração.</p></div>
+        <p>Importe arquivos .xlsx, .xls, .csv ou .pdf com leitura por Inteligência Artificial, conecte Planilhas Google, insira lançamentos manuais ou teste com a demonstração.</p></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-primary btn-sm" id="b-go-imp">Importar XLSX / CSV / PDF</button>
-          <button class="btn btn-secondary btn-sm" id="b-demo">Carregar Demonstração (Simulação)</button>
+          <button type="button" class="btn btn-primary btn-sm" id="b-go-imp">Importar com IA (XLSX/CSV/PDF)</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="b-demo">Carregar Demonstração (Simulação)</button>
         </div>`;
       $("b-go-imp").onclick = () => switchView("import-drive");
       $("b-demo").onclick = loadDemo;
@@ -1595,18 +2050,13 @@
     const prevF = ui.filters.cat, prevP = $("pdf-cat").value || "Todas";
     $("f-cat").innerHTML = optsHtml; $("f-cat").value = allCats.includes(prevF) ? prevF : "Todas";
     $("pdf-cat").innerHTML = optsHtml; $("pdf-cat").value = allCats.includes(prevP) ? prevP : "Todas";
-    const sug = Array.from(new Set([...allCats, "Arrecadação Principal", "Tributos", "Serviços e Taxas", "Convênios", "Custos Operacionais"]));
+    const sug = Array.from(new Set([...allCats, "Arrecadação Principal", "Tributos e Impostos", "Serviços e Taxas", "Convênios e Repasses", "Custos Operacionais", "Folha e Encargos"]));
     $("cat-dl").innerHTML = sug.map(c => `<option value="${esc(c)}"></option>`).join("");
 
     renderRecords(recs);
     renderFiles();
     updateSim();
-
-    requestAnimationFrame(() => {
-      drawMonthlyChart(an.monthly);
-      drawAnnualChart(an.annual);
-      drawDeviationChart(an.monthly);
-    });
+    requestAnimationFrame(redrawAllVisibleCharts);
   }
 
   function renderRecords(recs) {
@@ -1617,7 +2067,7 @@
 
     const tb = $("rec-tbody");
     if (!recs.length) {
-      tb.innerHTML = `<tr><td colspan="9" class="empty">Nenhum lançamento encontrado. Clique em <strong>+ Inserir Novo Dado</strong> ou importe .xlsx, .csv ou .pdf.</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="9" class="empty">Nenhum lançamento encontrado. Clique em <strong>+ Inserir Novo Dado</strong> ou importe .xlsx, .csv ou .pdf com IA.</td></tr>`;
       $("cb-all").checked = false;
       return;
     }
@@ -1632,8 +2082,8 @@
         <td class="tr num" style="color:var(--text-secondary)">${r.target_amount>0?fmtBRL(r.target_amount):"—"}</td>
         <td style="color:var(--text-muted);font-size:11.5px;">${esc(r.source)}</td>
         <td class="tr" style="white-space:nowrap;">
-          <button class="btn btn-ghost btn-sm b-edit" data-id="${r.id}">Editar</button>
-          <button class="btn btn-coral btn-sm b-del" data-id="${r.id}">Excluir</button>
+          <button type="button" class="btn btn-ghost btn-sm b-edit" data-id="${r.id}">Editar</button>
+          <button type="button" class="btn btn-coral btn-sm b-del" data-id="${r.id}">Excluir</button>
         </td>
       </tr>`).join("");
 
@@ -1668,28 +2118,17 @@
   function renderFiles() {
     const tb = $("files-tbody");
     if (!store.files.length) {
-      tb.innerHTML = `<tr><td colspan="5" class="empty">Nenhum arquivo (.xlsx, .csv, .pdf) importado ainda.</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="5" class="empty">Nenhum arquivo (.xlsx, .xls, .csv, .pdf) importado ainda.</td></tr>`;
       return;
     }
-    const badgeMap = {
-      demo: ["Simulação", "high"],
-      pdf: ["PDF Importado", "high"],
-      drive: ["Google Drive", "med"],
-      xlsx: ["Planilha XLSX", "med"],
-      csv: ["Planilha CSV", "med"],
-      upload: ["Upload Local", "med"]
-    };
-    tb.innerHTML = store.files.map(f => {
-      const [lbl, cls] = badgeMap[f.source_type] || ["Arquivo", "med"];
-      return `
-        <tr>
-          <td style="font-weight:600">${esc(f.file_name)}</td>
-          <td><span class="tag ${cls}">${lbl}</span></td>
-          <td class="tr num">${f.row_count}</td>
-          <td class="num" style="font-size:12px;color:var(--text-secondary)">${new Date(f.synced_at).toLocaleString("pt-BR")}</td>
-          <td class="tr"><button class="btn btn-coral btn-sm b-delfile" data-fid="${esc(f.file_id)}" data-fn="${esc(f.file_name)}">Excluir Arquivo e Dados</button></td>
-        </tr>`;
-    }).join("");
+    tb.innerHTML = store.files.map(f => `
+      <tr>
+        <td style="font-weight:600">${esc(f.file_name)}</td>
+        <td><span class="tag ${f.source_type==="pdf"||f.source_type==="demo"?"high":"med"}">${esc((f.source_type || "ARQ").toUpperCase())}${f.engine ? ` • ${esc(f.engine)}` : ""}</span></td>
+        <td class="tr num">${f.row_count}</td>
+        <td class="num" style="font-size:12px;color:var(--text-secondary)">${new Date(f.synced_at).toLocaleString("pt-BR")}</td>
+        <td class="tr"><button type="button" class="btn btn-coral btn-sm b-delfile" data-fid="${esc(f.file_id)}" data-fn="${esc(f.file_name)}">Excluir Arquivo e Dados</button></td>
+      </tr>`).join("");
 
     tb.querySelectorAll(".b-delfile").forEach(b => b.onclick = () => {
       const fid = b.dataset.fid, fn = b.dataset.fn;
@@ -1726,13 +2165,7 @@
     const [t, s] = VIEW_META[v] || VIEW_META.overview;
     $("view-title").textContent = t;
     $("view-subtitle").textContent = s;
-    if (ui.lastAnalytics) {
-      requestAnimationFrame(() => {
-        drawMonthlyChart(ui.lastAnalytics.monthly);
-        drawAnnualChart(ui.lastAnalytics.annual);
-        drawDeviationChart(ui.lastAnalytics.monthly);
-      });
-    }
+    requestAnimationFrame(redrawAllVisibleCharts);
   }
 
   function openRecModal(rec = null) {
@@ -1786,163 +2219,239 @@
   }
 
   // Event Wiring
-  document.querySelectorAll(".nav-btn").forEach(b => b.onclick = () => switchView(b.dataset.view));
-  $("btn-top-insert").onclick = () => openRecModal(null);
-  $("btn-rec-add").onclick = () => openRecModal(null);
-  $("btn-top-import").onclick = () => switchView("import-drive");
-  $("btn-top-pdf").onclick = () => switchView("reports");
-  $("btn-go-strat").onclick = () => switchView("strategy");
+  function bindEvents() {
+    document.querySelectorAll(".nav-btn").forEach(b => b.onclick = () => switchView(b.dataset.view));
+    $("btn-top-insert").onclick = () => openRecModal(null);
+    $("btn-rec-add").onclick = () => openRecModal(null);
+    $("btn-top-import").onclick = () => switchView("import-drive");
+    $("btn-top-pdf").onclick = () => switchView("reports");
+    $("btn-go-strat").onclick = () => switchView("strategy");
 
-  document.querySelectorAll("#year-seg .year-btn").forEach(b => b.onclick = () => {
-    document.querySelectorAll("#year-seg .year-btn").forEach(x => x.classList.remove("active"));
-    b.classList.add("active");
-    ui.filters.year = b.dataset.year;
-    refreshAll();
-  });
-  $("f-start").onchange = e => { ui.filters.start = e.target.value; refreshAll(); };
-  $("f-end").onchange = e => { ui.filters.end = e.target.value; refreshAll(); };
-  $("f-cat").onchange = e => { ui.filters.cat = e.target.value; refreshAll(); };
-  $("btn-clear-filters").onclick = () => {
-    ui.filters = { year:"", start:"", end:"", cat:"Todas", type:"", search:"" };
-    document.querySelectorAll("#year-seg .year-btn").forEach(x => x.classList.toggle("active", x.dataset.year===""));
-    $("f-start").value = ""; $("f-end").value = ""; $("f-cat").value = "Todas"; $("r-search").value = ""; $("r-type").value = "";
-    refreshAll();
-  };
-  $("r-search").oninput = e => { ui.filters.search = e.target.value; refreshAll(); };
-  $("r-type").onchange = e => { ui.filters.type = e.target.value; refreshAll(); };
+    // AI Config Controls
+    $("ai-provider").value = aiCfg.provider;
+    syncProviderModelDropdown();
+    $("ai-key").value = aiCfg.apiKey;
+    renderAiStatus();
 
-  const dz = $("dropzone"), fp = $("file-picker");
-  dz.onclick = () => fp.click();
-  $("btn-pick-files").onclick = () => fp.click();
-  dz.ondragover = e => { e.preventDefault(); dz.classList.add("dragover"); };
-  dz.ondragleave = () => dz.classList.remove("dragover");
-  dz.ondrop = e => { e.preventDefault(); dz.classList.remove("dragover"); handleFilesUpload(e.dataTransfer.files); };
-  fp.onchange = e => handleFilesUpload(e.target.files);
-
-  $("btn-dl-csv-tpl").onclick = () => {
-    const csv = "\uFEFFData;Tipo;Categoria;Descricao;Valor_Realizado;Meta;Status\n15/01/2026;Receita;Arrecadacao Principal;Arrecadacao Jan/2026;145000,00;150000,00;Realizado\n20/01/2026;Receita;Servicos e Taxas;Taxas Jan/2026;42500,00;40000,00;Realizado\n25/01/2026;Despesa;Custos Operacionais;Custeio mensal;68200,00;0,00;Realizado\n";
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const u = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = u; a.download = "modelo_relatorio_financeiro.csv"; a.click();
-    setTimeout(() => URL.revokeObjectURL(u), 1000);
-  };
-
-  $("btn-save-drv").onclick = () => {
-    store.driveLinks = $("drv-links").value.trim();
-    store.driveAuto = $("drv-auto").value === "true";
-    store.driveInterval = parseInt($("drv-interval").value, 10) || 60;
-    saveStore();
-    restartDriveAutoSync();
-    toast("Configuração do Google Drive salva!");
-  };
-  $("btn-sync-drv").onclick = () => {
-    store.driveLinks = $("drv-links").value.trim();
-    store.driveAuto = $("drv-auto").value === "true";
-    store.driveInterval = parseInt($("drv-interval").value, 10) || 60;
-    saveStore();
-    restartDriveAutoSync();
-    syncGoogleDriveLinks(false);
-  };
-
-  // PDF preview modal wiring
-  $("m-pdf-x").onclick = $("m-pdf-cancel").onclick = () => { $("m-pdf-preview").classList.remove("open"); ui.pdfPending = null; };
-  $("pdf-cb-all").onchange = e => {
-    if (!ui.pdfPending) return;
-    ui.pdfPending.rows.forEach(r => r.checked = e.target.checked);
-    renderPdfPreviewRows();
-  };
-  $("m-pdf-confirm").onclick = confirmPdfImport;
-
-  // Targets & Simulator
-  $("btn-save-targets").onclick = () => {
-    store.targets[2024] = parseFloat($("t-2024").value || "0") || 0;
-    store.targets[2025] = parseFloat($("t-2025").value || "0") || 0;
-    store.targets[2026] = parseFloat($("t-2026").value || "0") || 0;
-    saveStore();
-    toast("Metas de arrecadação atualizadas!");
-    refreshAll();
-  };
-  ["s-rev","s-rec","s-exp"].forEach(id => $(id).oninput = updateSim);
-
-  // Records CRUD
-  $("cb-all").onchange = e => {
-    const recs = filterRecords(ui.filters);
-    if (e.target.checked) recs.forEach(r => ui.selected.add(r.id)); else ui.selected.clear();
-    document.querySelectorAll(".row-cb").forEach(c => c.checked = e.target.checked);
-    updateSelBtn();
-  };
-  $("btn-del-sel").onclick = () => {
-    openConfirm(`Excluir permanentemente os ${ui.selected.size} lançamento(s) selecionado(s)?`, () => {
-      store.records = store.records.filter(r => !ui.selected.has(r.id));
-      ui.selected.clear();
-      saveStore();
-      toast("Registros selecionados excluídos.");
-      refreshAll();
-    });
-  };
-  $("btn-del-all").onclick = () => {
-    openConfirm("Excluir TODOS os lançamentos e arquivos carregados no painel?", () => {
-      store.records = []; store.files = []; ui.selected.clear();
-      saveStore();
-      toast("Base limpa com sucesso.");
-      refreshAll();
-    });
-  };
-
-  $("m-rec-x").onclick = $("m-rec-cancel").onclick = () => $("m-record").classList.remove("open");
-  $("rec-form").onsubmit = e => {
-    e.preventDefault();
-    const id = $("rf-id").value ? Number($("rf-id").value) : null;
-    const d = $("rf-date").value;
-    const obj = {
-      date: d, year: Number(d.slice(0,4)), month: Number(d.slice(5,7)),
-      type: $("rf-type").value, category: $("rf-cat").value.trim(), status: $("rf-status").value,
-      amount: parseFloat($("rf-amt").value || "0"), target_amount: parseFloat($("rf-tgt").value || "0"),
-      description: $("rf-desc").value.trim()
+    $("ai-provider").onchange = () => {
+      syncProviderModelDropdown();
+      aiCfg.provider = $("ai-provider").value;
+      aiCfg.model = $("ai-model").value;
+      saveAiCfg();
+      renderAiStatus();
     };
-    if (id) {
-      const idx = store.records.findIndex(r => r.id === id);
-      if (idx >= 0) store.records[idx] = { ...store.records[idx], ...obj };
-      toast("Lançamento atualizado.");
-    } else {
-      store.records.push({ id: store.nextId++, ...obj, source: "Inserção Manual", source_file_id: "manual", is_demo: false });
-      toast("Novo lançamento inserido!");
+    $("ai-model").onchange = () => {
+      aiCfg.model = $("ai-model").value;
+      saveAiCfg();
+      renderAiStatus();
+    };
+    $("btn-toggle-key").onclick = () => {
+      const inp = $("ai-key");
+      const show = inp.type === "password";
+      inp.type = show ? "text" : "password";
+      $("btn-toggle-key").textContent = show ? "Ocultar" : "Ver";
+    };
+    $("btn-save-ai").onclick = () => {
+      aiCfg.provider = $("ai-provider").value;
+      aiCfg.model = $("ai-model").value;
+      aiCfg.apiKey = $("ai-key").value.trim();
+      saveAiCfg();
+      renderAiStatus();
+      toast("Configuração do Motor de IA salva!");
+    };
+    $("btn-test-ai").onclick = testAiConnection;
+
+    // Filters
+    document.querySelectorAll("#year-seg .year-btn").forEach(b => b.onclick = () => {
+      document.querySelectorAll("#year-seg .year-btn").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      ui.filters.year = b.dataset.year;
+      refreshAll();
+    });
+    $("f-start").onchange = e => { ui.filters.start = e.target.value; refreshAll(); };
+    $("f-end").onchange = e => { ui.filters.end = e.target.value; refreshAll(); };
+    $("f-cat").onchange = e => { ui.filters.cat = e.target.value; refreshAll(); };
+    $("btn-clear-filters").onclick = () => {
+      ui.filters = { year:"", start:"", end:"", cat:"Todas", type:"", search:"" };
+      document.querySelectorAll("#year-seg .year-btn").forEach(x => x.classList.toggle("active", x.dataset.year===""));
+      $("f-start").value = ""; $("f-end").value = ""; $("f-cat").value = "Todas"; $("r-search").value = ""; $("r-type").value = "";
+      refreshAll();
+    };
+    $("r-search").oninput = e => { ui.filters.search = e.target.value; refreshAll(); };
+    $("r-type").onchange = e => { ui.filters.type = e.target.value; refreshAll(); };
+
+    // Dropzone (input is outside dropzone — zero bubbling issues)
+    const dz = $("dropzone"), fp = $("file-picker");
+    dz.onclick = () => fp.click();
+    dz.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fp.click(); } };
+    $("btn-pick-files").onclick = () => fp.click();
+    dz.ondragover = e => { e.preventDefault(); dz.classList.add("dragover"); };
+    dz.ondragleave = () => dz.classList.remove("dragover");
+    dz.ondrop = e => { e.preventDefault(); dz.classList.remove("dragover"); handleFilesUpload(e.dataTransfer.files); };
+    fp.onchange = e => handleFilesUpload(e.target.files);
+
+    $("btn-dl-csv-tpl").onclick = () => {
+      const csv = "\uFEFFData;Tipo;Categoria;Descricao;Valor_Realizado;Meta;Status\n15/01/2026;Receita;Arrecadacao Principal;Arrecadacao Jan/2026;145000,00;150000,00;Realizado\n20/01/2026;Receita;Servicos e Taxas;Taxas Jan/2026;42500,00;40000,00;Realizado\n25/01/2026;Despesa;Custos Operacionais;Custeio mensal;68200,00;0,00;Realizado\n";
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = u; a.download = "modelo_relatorio_financeiro.csv"; a.click();
+      setTimeout(() => URL.revokeObjectURL(u), 1000);
+    };
+
+    // Drive config
+    $("btn-save-drv").onclick = () => {
+      store.driveLinks = $("drv-links").value.trim();
+      store.driveAuto = $("drv-auto").value === "true";
+      store.driveInterval = parseInt($("drv-interval").value, 10) || 60;
+      saveStore();
+      restartDriveAutoSync();
+      toast("Configuração do Google Drive salva!");
+    };
+    $("btn-sync-drv").onclick = () => {
+      store.driveLinks = $("drv-links").value.trim();
+      store.driveAuto = $("drv-auto").value === "true";
+      store.driveInterval = parseInt($("drv-interval").value, 10) || 60;
+      saveStore();
+      restartDriveAutoSync();
+      syncGoogleDriveLinks(false);
+    };
+
+    // Review Modal
+    const closeReview = () => {
+      $("m-pdf-preview").classList.remove("open");
+      ui.currentReview = null;
+      if (ui.reviewQueue.length) openNextReviewIfAny();
+    };
+    $("m-pdf-x").onclick = closeReview;
+    $("m-pdf-cancel").onclick = closeReview;
+    $("pdf-cb-all").onchange = e => {
+      if (!ui.currentReview) return;
+      ui.currentReview.rows.forEach(r => r.checked = e.target.checked);
+      renderReviewRows();
+    };
+    $("btn-pdf-add-row").onclick = () => {
+      if (!ui.currentReview) return;
+      ui.currentReview.rows.push({
+        checked: true,
+        date: new Date().toISOString().slice(0,10),
+        type: "receita",
+        category: "Arrecadação Geral",
+        description: "Novo lançamento manual",
+        amount: 0,
+        target_amount: 0,
+        status: "Realizado"
+      });
+      renderReviewRows();
+    };
+    $("m-pdf-confirm").onclick = () => {
+      if (!ui.currentReview) return;
+      commitImportedRecords(ui.currentReview);
+      $("m-pdf-preview").classList.remove("open");
+      ui.currentReview = null;
+      if (ui.reviewQueue.length) {
+        openNextReviewIfAny();
+      } else {
+        switchView("overview");
+      }
+    };
+
+    // Targets & Simulator
+    $("btn-save-targets").onclick = () => {
+      store.targets[2024] = parseFloat($("t-2024").value || "0") || 0;
+      store.targets[2025] = parseFloat($("t-2025").value || "0") || 0;
+      store.targets[2026] = parseFloat($("t-2026").value || "0") || 0;
+      saveStore();
+      toast("Metas de arrecadação atualizadas!");
+      refreshAll();
+    };
+    ["s-rev","s-rec","s-exp"].forEach(id => $(id).oninput = updateSim);
+
+    // Records CRUD
+    $("cb-all").onchange = e => {
+      const recs = filterRecords(ui.filters);
+      if (e.target.checked) recs.forEach(r => ui.selected.add(r.id)); else ui.selected.clear();
+      document.querySelectorAll(".row-cb").forEach(c => c.checked = e.target.checked);
+      updateSelBtn();
+    };
+    $("btn-del-sel").onclick = () => {
+      openConfirm(`Excluir permanentemente os ${ui.selected.size} lançamento(s) selecionado(s)?`, () => {
+        store.records = store.records.filter(r => !ui.selected.has(r.id));
+        ui.selected.clear();
+        saveStore();
+        toast("Registros selecionados excluídos.");
+        refreshAll();
+      });
+    };
+    $("btn-del-all").onclick = () => {
+      openConfirm("Excluir TODOS os lançamentos e arquivos carregados no painel?", () => {
+        store.records = []; store.files = []; ui.selected.clear();
+        saveStore();
+        toast("Base limpa com sucesso.");
+        refreshAll();
+      });
+    };
+
+    $("m-rec-x").onclick = $("m-rec-cancel").onclick = () => $("m-record").classList.remove("open");
+    $("rec-form").onsubmit = e => {
+      e.preventDefault();
+      const id = $("rf-id").value ? Number($("rf-id").value) : null;
+      const d = $("rf-date").value;
+      const obj = {
+        date: d, year: Number(d.slice(0,4)), month: Number(d.slice(5,7)),
+        type: $("rf-type").value, category: $("rf-cat").value.trim(), status: $("rf-status").value,
+        amount: parseFloat($("rf-amt").value || "0"), target_amount: parseFloat($("rf-tgt").value || "0"),
+        description: $("rf-desc").value.trim()
+      };
+      if (id) {
+        const idx = store.records.findIndex(r => r.id === id);
+        if (idx >= 0) store.records[idx] = { ...store.records[idx], ...obj };
+        toast("Lançamento atualizado.");
+      } else {
+        store.records.push({ id: store.nextId++, ...obj, source: "Inserção Manual", source_file_id: "manual", is_demo: false });
+        toast("Novo lançamento inserido!");
+      }
+      saveStore();
+      $("m-record").classList.remove("open");
+      refreshAll();
+    };
+
+    $("m-cnf-x").onclick = $("m-cnf-cancel").onclick = () => $("m-confirm").classList.remove("open");
+    $("m-cnf-ok").onclick = () => { if (ui.confirmFn) ui.confirmFn(); $("m-confirm").classList.remove("open"); };
+
+    document.querySelectorAll(".pdf-pre").forEach(b => b.onclick = () => {
+      if (b.dataset.s) { $("pdf-s").value = b.dataset.s; $("pdf-e").value = b.dataset.e; }
+      else if (b.dataset.days) {
+        const e = new Date(), s = new Date(); s.setDate(e.getDate() - Number(b.dataset.days));
+        $("pdf-s").value = s.toISOString().slice(0,10); $("pdf-e").value = e.toISOString().slice(0,10);
+      }
+    });
+    $("btn-pdf-full").onclick = () => triggerPdfDownload("completo");
+    $("btn-pdf-period").onclick = () => triggerPdfDownload("periodo");
+
+    bindChartHover("c-monthly", "tt-monthly", "monthly", m =>
+      `<strong style="color:var(--peach)">${m.label}</strong><br/>Arrecadação: <span class="num">${fmtBRL(m.rev)}</span><br/>Meta: <span class="num">${fmtBRL(m.meta)}</span> (${fmtPct(m.att)})<br/>Despesas: <span class="num" style="color:var(--coral)">${fmtBRL(m.exp)}</span>`
+    );
+    bindChartHover("c-annual", "tt-annual", "annual", a =>
+      `<strong style="color:var(--peach)">Exercício ${a.year}</strong><br/>Arrecadação: <span class="num">${fmtBRL(a.rev)}</span><br/>Meta: <span class="num">${fmtBRL(a.meta)}</span><br/>Despesas: <span class="num" style="color:var(--coral)">${fmtBRL(a.exp)}</span><br/>Saldo: <span class="num">${fmtBRL(a.saldo)}</span>`
+    );
+    bindChartHover("c-dev", "tt-dev", "dev", m =>
+      `<strong style="color:var(--peach)">${m.label}</strong><br/>${m.desvio<0?"Déficit":"Superávit"}: <span class="num" style="color:${m.desvio<0?"var(--coral)":"var(--orange)"}">${fmtBRL(m.desvio)}</span>`
+    );
+
+    // ResizeObserver guarantees crisp redraws whenever hidden tabs become visible
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(() => requestAnimationFrame(redrawAllVisibleCharts));
+      document.querySelectorAll(".chart-box").forEach(box => ro.observe(box));
     }
-    saveStore();
-    $("m-record").classList.remove("open");
+    window.addEventListener("resize", () => requestAnimationFrame(redrawAllVisibleCharts));
+  }
+
+  async function init() {
+    await loadStoreAsync();
+    bindEvents();
     refreshAll();
-  };
+    restartDriveAutoSync();
+  }
 
-  $("m-cnf-x").onclick = $("m-cnf-cancel").onclick = () => $("m-confirm").classList.remove("open");
-  $("m-cnf-ok").onclick = () => { if (ui.confirmFn) ui.confirmFn(); $("m-confirm").classList.remove("open"); };
-
-  document.querySelectorAll(".pdf-pre").forEach(b => b.onclick = () => {
-    if (b.dataset.s) { $("pdf-s").value = b.dataset.s; $("pdf-e").value = b.dataset.e; }
-    else if (b.dataset.days) {
-      const e = new Date(), s = new Date(); s.setDate(e.getDate() - Number(b.dataset.days));
-      $("pdf-s").value = s.toISOString().slice(0,10); $("pdf-e").value = e.toISOString().slice(0,10);
-    }
-  });
-  $("btn-pdf-full").onclick = () => triggerPdfDownload("completo");
-  $("btn-pdf-period").onclick = () => triggerPdfDownload("periodo");
-
-  bindChartHover("c-monthly", "tt-monthly", "monthly", m =>
-    `<strong style="color:var(--peach)">${m.label}</strong><br/>Arrecadação: <span class="num">${fmtBRL(m.rev)}</span><br/>Meta: <span class="num">${fmtBRL(m.meta)}</span> (${fmtPct(m.att)})<br/>Despesas: <span class="num" style="color:var(--coral)">${fmtBRL(m.exp)}</span>`
-  );
-  bindChartHover("c-annual", "tt-annual", "annual", a =>
-    `<strong style="color:var(--peach)">Exercício ${a.year}</strong><br/>Arrecadação: <span class="num">${fmtBRL(a.rev)}</span><br/>Meta: <span class="num">${fmtBRL(a.meta)}</span><br/>Despesas: <span class="num" style="color:var(--coral)">${fmtBRL(a.exp)}</span><br/>Saldo: <span class="num">${fmtBRL(a.saldo)}</span>`
-  );
-  bindChartHover("c-dev", "tt-dev", "dev", m =>
-    `<strong style="color:var(--peach)">${m.label}</strong><br/>${m.desvio<0?"Déficit":"Superávit"}: <span class="num" style="color:${m.desvio<0?"var(--coral)":"var(--orange)"}">${fmtBRL(m.desvio)}</span>`
-  );
-
-  window.addEventListener("resize", () => {
-    if (!ui.lastAnalytics) return;
-    drawMonthlyChart(ui.lastAnalytics.monthly);
-    drawAnnualChart(ui.lastAnalytics.annual);
-    drawDeviationChart(ui.lastAnalytics.monthly);
-  });
-
-  refreshAll();
-  restartDriveAutoSync();
+  init();
 })();
